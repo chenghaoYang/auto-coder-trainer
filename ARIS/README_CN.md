@@ -1061,6 +1061,12 @@ claude
 
 </details>
 
+### 探索 / Harness / 自动化后续方向
+
+- [ ] **模型探索评测矩阵** — 增加一组固定小任务，在相同预算上限下比较执行者×评审者组合（Claude×GPT、GLM×MiniMax 等），统一报告收敛速度、分数稳定性与单位提升成本。
+- [ ] **Harness 级预算遥测** — 在 checkpoint 输出中增加每轮预算快照（`轮次`、`分数`、`gpu_hours_used / max`、`token_cost`），让长周期循环保持可解释、可控成本。
+- [ ] **结构化自动化 ablation** — 为 `/research-pipeline` 增加紧凑 `ablate` 参数覆盖，按“单变量族”扫描小参数表面，并自动排序结果，支持可复现调优。
+
 ### 计划中
 
 - [x] **GitHub 代码同步** — `/run-experiment` 现支持在 CLAUDE.md 中设置 `code_sync: git`：本地 `git push` → 服务器 `ssh "git pull"`。默认仍为 `rsync`（零破坏性改动）

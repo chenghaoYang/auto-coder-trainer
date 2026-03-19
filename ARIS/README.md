@@ -1168,6 +1168,12 @@ claude
 
 </details>
 
+### Exploration / Harness / Automation Next Steps
+
+- [ ] **Model exploration benchmark matrix** — add a small fixed task suite to compare executor×reviewer pairs (Claude×GPT, GLM×MiniMax, etc.) under the same budget cap, then report convergence speed, score stability, and cost-per-improvement.
+- [ ] **Harness-level budget telemetry** — print per-round budget snapshots (`round`, `score`, `gpu_hours_used / max`, `token_cost`) in checkpoint outputs so long loops stay interpretable and cost-safe.
+- [ ] **Structured automation ablations** — support a compact `ablate` override in `/research-pipeline` to sweep a tiny parameter surface (one variable family at a time) and auto-rank outcomes for reproducible tuning.
+
 ### Planned
 
 - [x] **GitHub-based code sync** — `/run-experiment` now supports `code_sync: git` in CLAUDE.md: `git push` locally → `ssh server "git pull"` on the server. Default remains `rsync` (zero breaking changes)
