@@ -1,8 +1,9 @@
 """Auto-generate technical reports from experiment results."""
 
+import json
 import statistics
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 
 class ReportGenerator:
@@ -21,6 +22,9 @@ class ReportGenerator:
 
     def _fetch_experiment_data(self, experiment_id: str) -> dict[str, Any]:
         """Fetch experiment, its ablations, and verdicts from the DB."""
+        if hasattr(self.result_db, "get_experiment_bundle"):
+            return self.result_db.get_experiment_bundle(experiment_id)
+
         exp = self.result_db.get_experiment(experiment_id)
         if exp is None:
             return {"experiment": None, "ablations": [], "verdicts": []}
@@ -47,7 +51,7 @@ class ReportGenerator:
     def _collect_results_rows(
         self, data: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """Build a flat list of result rows from experiment + ablation metrics.
+        """Build a flat list of result rows from the main experiment metrics.
 
         Each row has keys: benchmark, metric, value, seed.
         """
@@ -72,23 +76,59 @@ class ReportGenerator:
                     }
                 )
 
-        # Ablation metrics
+        return rows
+
+    def _collect_ablation_rows(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Flatten ablation records into display rows."""
+        rows: list[dict[str, Any]] = []
         for abl in data.get("ablations", []):
             abl_metrics = abl.get("metrics_json")
             if isinstance(abl_metrics, str):
-                import json
-                abl_metrics = json.loads(abl_metrics)
+                try:
+                    abl_metrics = json.loads(abl_metrics)
+                except json.JSONDecodeError:
+                    abl_metrics = {}
             if isinstance(abl_metrics, dict):
-                label = f"{abl.get('variable', '?')}={abl.get('value', '?')}"
-                for metric_name, value in sorted(abl_metrics.items()):
-                    rows.append(
-                        {
-                            "benchmark": label,
-                            "metric": metric_name,
-                            "value": value,
-                            "seed": "-",
-                        }
-                    )
+                metric_text = ", ".join(
+                    f"{name}={value:.4f}" if isinstance(value, float) else f"{name}={value}"
+                    for name, value in sorted(abl_metrics.items())
+                )
+            else:
+                metric_text = "-"
+            rows.append(
+                {
+                    "variable": abl.get("variable", "?"),
+                    "value": abl.get("value", "?"),
+                    "metrics": metric_text,
+                }
+            )
+        return rows
+
+    def _collect_verdict_rows(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Flatten verdict records into display rows."""
+        rows: list[dict[str, Any]] = []
+        for verdict in data.get("verdicts", []):
+            checks = verdict.get("checks_json", {})
+            if isinstance(checks, dict):
+                checks_text = ", ".join(
+                    f"{name}={'yes' if ok else 'no'}" for name, ok in sorted(checks.items())
+                )
+            else:
+                checks_text = "-"
+            suggestions = verdict.get("suggestions_json", [])
+            if isinstance(suggestions, list):
+                suggestions_text = "; ".join(str(item) for item in suggestions) or "-"
+            else:
+                suggestions_text = str(suggestions) if suggestions else "-"
+            rows.append(
+                {
+                    "verdict": verdict.get("verdict", "?"),
+                    "reasoning": verdict.get("reasoning", ""),
+                    "checks": checks_text,
+                    "suggestions": suggestions_text,
+                    "timestamp": verdict.get("timestamp", ""),
+                }
+            )
         return rows
 
     def _analyze_metrics(
@@ -128,9 +168,14 @@ class ReportGenerator:
     def generate_markdown(self, experiment_ids: list[str], output_path: str | Path) -> str:
         """Generate a Markdown report for the given experiments."""
         parts: list[str] = []
+        bundles = [self._fetch_experiment_data(exp_id) for exp_id in experiment_ids]
 
-        for exp_id in experiment_ids:
-            data = self._fetch_experiment_data(exp_id)
+        if len(experiment_ids) > 1:
+            parts.append("## Comparison\n")
+            parts.append(self.generate_comparison_table(experiment_ids))
+            parts.append("")
+
+        for exp_id, data in zip(experiment_ids, bundles):
             exp = data["experiment"]
             if exp is None:
                 parts.append(f"## Experiment {exp_id}\n\n_Not found._\n")
@@ -139,23 +184,30 @@ class ReportGenerator:
             recipe = exp.get("recipe_id", exp_id)
             parts.append(f"# Experiment Report: {recipe}\n")
 
+            latest_verdict = data.get("verdicts", [])[-1] if data.get("verdicts") else None
+
             # Setup section
             parts.append("## Setup\n")
-            parts.append(f"| Parameter | Value |")
-            parts.append(f"| --- | --- |")
+            parts.append("| Parameter | Value |")
+            parts.append("| --- | --- |")
             parts.append(f"| Experiment ID | {exp_id} |")
             parts.append(f"| Model | {exp.get('model_base', 'N/A')} |")
             parts.append(f"| Trainer | {exp.get('trainer_type', 'N/A')} |")
             parts.append(f"| Backend | {exp.get('backend', 'N/A')} |")
             parts.append(f"| Config Hash | {exp.get('config_hash', 'N/A')} |")
+            parts.append(f"| Status | {exp.get('status', 'unknown')} |")
+            if latest_verdict:
+                parts.append(f"| Latest Verdict | {latest_verdict.get('verdict', 'N/A')} |")
 
             metrics = exp.get("metrics_json")
             if isinstance(metrics, str):
-                import json
-                metrics = json.loads(metrics)
-            if isinstance(metrics, dict):
+                try:
+                    metrics = json.loads(metrics)
+                except json.JSONDecodeError:
+                    metrics = {}
+            if isinstance(metrics, dict) and metrics:
                 hp_str = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
-                parts.append(f"| Hyperparams / Metrics | {hp_str} |")
+                parts.append(f"| Main Metrics | {hp_str} |")
             parts.append("")
 
             # Results table
@@ -169,6 +221,31 @@ class ReportGenerator:
                     if isinstance(val, float):
                         val = f"{val:.4f}"
                     parts.append(f"| {r['benchmark']} | {r['metric']} | {val} | {r['seed']} |")
+                parts.append("")
+
+            # Ablation table
+            ablation_rows = self._collect_ablation_rows(data)
+            if ablation_rows:
+                parts.append("## Ablations\n")
+                parts.append("| Variable | Value | Metrics |")
+                parts.append("| --- | --- | --- |")
+                for row in ablation_rows:
+                    parts.append(
+                        f"| {row['variable']} | {row['value']} | {row['metrics']} |"
+                    )
+                parts.append("")
+
+            # Verdict table
+            verdict_rows = self._collect_verdict_rows(data)
+            if verdict_rows:
+                parts.append("## Verdicts\n")
+                parts.append("| Verdict | Reasoning | Checks | Suggestions | Timestamp |")
+                parts.append("| --- | --- | --- | --- | --- |")
+                for row in verdict_rows:
+                    parts.append(
+                        f"| {row['verdict']} | {row['reasoning']} | {row['checks']} | "
+                        f"{row['suggestions']} | {row['timestamp']} |"
+                    )
                 parts.append("")
 
             # Analysis
@@ -215,6 +292,8 @@ class ReportGenerator:
     def generate_latex(self, experiment_ids: list[str], output_path: str | Path) -> str:
         """Generate a LaTeX report (compatible with ARIS paper-writing workflow)."""
         parts: list[str] = []
+        bundles = [self._fetch_experiment_data(exp_id) for exp_id in experiment_ids]
+
         parts.append(r"\documentclass{article}")
         parts.append(r"\usepackage{booktabs}")
         parts.append(r"\usepackage{geometry}")
@@ -222,8 +301,24 @@ class ReportGenerator:
         parts.append(r"\begin{document}")
         parts.append("")
 
-        for idx, exp_id in enumerate(experiment_ids):
-            data = self._fetch_experiment_data(exp_id)
+        if len(experiment_ids) > 1:
+            parts.append(r"\section{Comparison}")
+            parts.append(r"\begin{itemize}")
+            for exp_id, data in zip(experiment_ids, bundles):
+                exp = data["experiment"]
+                if exp is None:
+                    parts.append(rf"\item {_latex_escape(exp_id)}: experiment not found")
+                    continue
+                latest_verdict = data.get("verdicts", [])[-1] if data.get("verdicts") else None
+                verdict_text = latest_verdict.get("verdict", "N/A") if latest_verdict else "N/A"
+                parts.append(
+                    rf"\item {_latex_escape(exp_id)}: status "
+                    rf"{_latex_escape(exp.get('status', 'unknown'))}, verdict {_latex_escape(verdict_text)}"
+                )
+            parts.append(r"\end{itemize}")
+            parts.append("")
+
+        for exp_id, data in zip(experiment_ids, bundles):
             exp = data["experiment"]
             if exp is None:
                 parts.append(rf"\section{{Experiment {_latex_escape(exp_id)}}}")
@@ -234,6 +329,8 @@ class ReportGenerator:
             recipe = exp.get("recipe_id", exp_id)
             parts.append(rf"\section{{Experiment Report: {_latex_escape(recipe)}}}")
             parts.append("")
+
+            latest_verdict = data.get("verdicts", [])[-1] if data.get("verdicts") else None
 
             # Setup
             parts.append(r"\subsection{Setup}")
@@ -246,14 +343,19 @@ class ReportGenerator:
             parts.append(rf"Trainer & {_latex_escape(exp.get('trainer_type', 'N/A'))} \\")
             parts.append(rf"Backend & {_latex_escape(exp.get('backend', 'N/A'))} \\")
             parts.append(rf"Config Hash & {_latex_escape(exp.get('config_hash', 'N/A'))} \\")
+            parts.append(rf"Status & {_latex_escape(exp.get('status', 'unknown'))} \\")
+            if latest_verdict:
+                parts.append(rf"Latest Verdict & {_latex_escape(latest_verdict.get('verdict', 'N/A'))} \\")
 
             metrics = exp.get("metrics_json")
             if isinstance(metrics, str):
-                import json
-                metrics = json.loads(metrics)
-            if isinstance(metrics, dict):
+                try:
+                    metrics = json.loads(metrics)
+                except json.JSONDecodeError:
+                    metrics = {}
+            if isinstance(metrics, dict) and metrics:
                 hp_str = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
-                parts.append(rf"Hyperparams / Metrics & {_latex_escape(hp_str)} \\")
+                parts.append(rf"Main Metrics & {_latex_escape(hp_str)} \\")
 
             parts.append(r"\bottomrule")
             parts.append(r"\end{tabular}")
@@ -275,6 +377,44 @@ class ReportGenerator:
                         rf"{_latex_escape(str(r['benchmark']))} & "
                         rf"{_latex_escape(str(r['metric']))} & "
                         rf"{val} & {r['seed']} \\"
+                    )
+                parts.append(r"\bottomrule")
+                parts.append(r"\end{tabular}")
+                parts.append("")
+
+            # Ablations
+            ablation_rows = self._collect_ablation_rows(data)
+            if ablation_rows:
+                parts.append(r"\subsection{Ablations}")
+                parts.append(r"\begin{tabular}{lll}")
+                parts.append(r"\toprule")
+                parts.append(r"Variable & Value & Metrics \\")
+                parts.append(r"\midrule")
+                for row in ablation_rows:
+                    parts.append(
+                        rf"{_latex_escape(str(row['variable']))} & "
+                        rf"{_latex_escape(str(row['value']))} & "
+                        rf"{_latex_escape(str(row['metrics']))} \\"
+                    )
+                parts.append(r"\bottomrule")
+                parts.append(r"\end{tabular}")
+                parts.append("")
+
+            # Verdicts
+            verdict_rows = self._collect_verdict_rows(data)
+            if verdict_rows:
+                parts.append(r"\subsection{Verdicts}")
+                parts.append(r"\begin{tabular}{lllll}")
+                parts.append(r"\toprule")
+                parts.append(r"Verdict & Reasoning & Checks & Suggestions & Timestamp \\")
+                parts.append(r"\midrule")
+                for row in verdict_rows:
+                    parts.append(
+                        rf"{_latex_escape(str(row['verdict']))} & "
+                        rf"{_latex_escape(str(row['reasoning']))} & "
+                        rf"{_latex_escape(str(row['checks']))} & "
+                        rf"{_latex_escape(str(row['suggestions']))} & "
+                        rf"{_latex_escape(str(row['timestamp']))} \\"
                     )
                 parts.append(r"\bottomrule")
                 parts.append(r"\end{tabular}")
@@ -327,16 +467,21 @@ class ReportGenerator:
     # ------------------------------------------------------------------
 
     def generate_comparison_table(self, recipe_ids: list[str]) -> str:
-        """Generate a comparison table across multiple recipes.
+        """Generate a comparison table across multiple recipes or experiments.
 
         Produces a Markdown table with experiment ID, recipe, and key
         metrics side by side, with the best value per metric bolded.
         """
         import json as _json
 
-        # Gather experiments for each recipe
+        # Gather experiments for each identifier. Accept either experiment IDs
+        # or recipe IDs so callers do not need to pre-normalize the input.
         experiments: list[dict[str, Any]] = []
         for rid in recipe_ids:
+            exp = self.result_db.get_experiment(rid)
+            if exp is not None:
+                experiments.append(exp)
+                continue
             exps = self.result_db.find_by_recipe(rid)
             experiments.extend(exps)
 
@@ -357,7 +502,7 @@ class ReportGenerator:
             return "_No metrics available for comparison._\n"
 
         # Build header
-        header_cols = ["Experiment ID", "Recipe", "Status"] + metric_names
+        header_cols = ["Experiment ID", "Recipe", "Status", "Verdict"] + metric_names
         header = "| " + " | ".join(header_cols) + " |"
         sep = "| " + " | ".join("---" for _ in header_cols) + " |"
 
@@ -382,10 +527,16 @@ class ReportGenerator:
             if not isinstance(m, dict):
                 m = {}
 
+            verdict = "-"
+            latest_verdict = self.result_db.get_latest_verdict(exp.get("id", "")) if exp.get("id") else None
+            if latest_verdict is not None:
+                verdict = latest_verdict.get("verdict", "-")
+
             cols = [
                 exp.get("id", "?"),
                 exp.get("recipe_id", "?"),
                 exp.get("status", "?"),
+                verdict,
             ]
             for mn in metric_names:
                 val = m.get(mn)

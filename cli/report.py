@@ -66,6 +66,15 @@ def run_report(args: argparse.Namespace) -> None:
     print(f"[report] Found {len(experiments)} experiment(s)")
 
     experiment_ids = [e["id"] for e in experiments]
+    detailed_experiments: list[dict] = []
+    if experiment_id and hasattr(db, "get_experiment_bundle"):
+        bundle = db.get_experiment_bundle(experiment_id)
+        if bundle.get("experiment") is not None:
+            detailed_experiments.append(bundle)
+    elif recipe_id and hasattr(db, "find_by_recipe_with_details"):
+        detailed_experiments = db.find_by_recipe_with_details(recipe_id)
+    else:
+        detailed_experiments = [{"experiment": exp, "ablations": [], "verdicts": []} for exp in experiments]
 
     # ------------------------------------------------------------------
     # 3. Generate report
@@ -96,10 +105,10 @@ def run_report(args: argparse.Namespace) -> None:
             print("\n" + content)
     except NotImplementedError:
         print("[report] ReportGenerator methods not fully implemented — falling back to basic report.")
-        _generate_basic_report(experiments, fmt, output_dir)
+        _generate_basic_report(detailed_experiments, fmt, output_dir)
     except Exception as exc:
         print(f"[report] Error generating report: {exc}")
-        _generate_basic_report(experiments, fmt, output_dir)
+        _generate_basic_report(detailed_experiments, fmt, output_dir)
 
     db.close()
     print("[report] Done.")
@@ -118,28 +127,57 @@ def _generate_basic_report(
         lines.append("\\begin{document}")
         lines.append("\\section{Experiment Results}")
         for exp in experiments:
-            lines.append(f"\\subsection{{{exp.get('id', '?')}}}")
-            lines.append(f"Recipe: {exp.get('recipe_id', '?')} \\\\")
-            lines.append(f"Status: {exp.get('status', '?')} \\\\")
-            metrics = exp.get("metrics_json", {})
+            record = exp.get("experiment", exp)
+            lines.append(f"\\subsection{{{record.get('id', '?')}}}")
+            lines.append(f"Recipe: {record.get('recipe_id', '?')} \\\\")
+            lines.append(f"Status: {record.get('status', '?')} \\\\")
+            verdicts = exp.get("verdicts", []) if isinstance(exp, dict) else []
+            if verdicts:
+                lines.append(f"Latest verdict: {verdicts[-1].get('verdict', '?')} \\\\")
+            metrics = record.get("metrics_json", {})
             if isinstance(metrics, dict):
                 for k, v in metrics.items():
                     lines.append(f"{k}: {v} \\\\")
+            ablations = exp.get("ablations", []) if isinstance(exp, dict) else []
+            for abl in ablations:
+                lines.append(f"Ablation: {abl.get('variable', '?')}={abl.get('value', '?')} \\\\")
+                abl_metrics = abl.get("metrics_json", {})
+                if isinstance(abl_metrics, dict):
+                    for k, v in abl_metrics.items():
+                        lines.append(f"  {k}: {v} \\\\")
         lines.append("\\end{document}")
         ext = ".tex"
     else:
         lines.append("# Experiment Results\n")
         for exp in experiments:
-            lines.append(f"## {exp.get('id', '?')}\n")
-            lines.append(f"- **Recipe**: {exp.get('recipe_id', '?')}")
-            lines.append(f"- **Status**: {exp.get('status', '?')}")
-            lines.append(f"- **Trainer**: {exp.get('trainer_type', '?')} / {exp.get('backend', '?')}")
-            lines.append(f"- **Model**: {exp.get('model_base', '?')}")
-            metrics = exp.get("metrics_json", {})
+            record = exp.get("experiment", exp)
+            lines.append(f"## {record.get('id', '?')}\n")
+            lines.append(f"- **Recipe**: {record.get('recipe_id', '?')}")
+            lines.append(f"- **Status**: {record.get('status', '?')}")
+            lines.append(f"- **Trainer**: {record.get('trainer_type', '?')} / {record.get('backend', '?')}")
+            lines.append(f"- **Model**: {record.get('model_base', '?')}")
+            verdicts = exp.get("verdicts", []) if isinstance(exp, dict) else []
+            if verdicts:
+                latest = verdicts[-1]
+                lines.append(f"- **Latest verdict**: {latest.get('verdict', '?')}")
+                if latest.get("reasoning"):
+                    lines.append(f"- **Reasoning**: {latest.get('reasoning')}")
+            metrics = record.get("metrics_json", {})
             if isinstance(metrics, dict) and metrics:
                 lines.append("- **Metrics**:")
                 for k, v in metrics.items():
                     lines.append(f"  - {k}: {v}")
+            ablations = exp.get("ablations", []) if isinstance(exp, dict) else []
+            if ablations:
+                lines.append("- **Ablations**:")
+                for abl in ablations:
+                    metric_parts = abl.get("metrics_json", {})
+                    metric_text = ""
+                    if isinstance(metric_parts, dict) and metric_parts:
+                        metric_text = " | " + ", ".join(f"{k}: {v}" for k, v in metric_parts.items())
+                    lines.append(
+                        f"  - {abl.get('variable', '?')}={abl.get('value', '?')}{metric_text}"
+                    )
             lines.append("")
         ext = ".md"
 

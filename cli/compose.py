@@ -30,13 +30,11 @@ def _default_recipe(model: str) -> dict:
         "source_papers": [],
         "model": {
             "base": model,
-            "size": None,
             "adapter": "lora",
         },
         "dataset": {
             "sources": [],
             "filters": [],
-            "total_samples": None,
         },
         "trainer": {
             "type": "sft",
@@ -62,7 +60,8 @@ def _merge_atom(recipe: dict, atom: dict) -> None:
 
     # Merge dataset sources
     for src in atom.get("dataset", {}).get("sources", []):
-        recipe["dataset"]["sources"].append(src)
+        if src not in recipe["dataset"]["sources"]:
+            recipe["dataset"]["sources"].append(src)
 
     # Merge trainer params (atom params override defaults)
     for key, val in atom.get("trainer", {}).get("params", {}).items():
@@ -87,6 +86,14 @@ def _merge_atom(recipe: dict, atom: dict) -> None:
 
     # Merge ablation specs
     recipe["ablation"].extend(atom.get("ablation", []))
+
+
+def _build_minimal_recipe_id(atom_names: list[str]) -> str:
+    """Build a stable recipe identifier from the selected atoms."""
+    if not atom_names:
+        return "recipe-default-001"
+    slug = "-".join(atom_names)
+    return "recipe-" + slug[:60] + "-001"
 
 
 def run_compose(args: argparse.Namespace) -> None:
@@ -122,7 +129,7 @@ def run_compose(args: argparse.Namespace) -> None:
 
     # Step 3: Build recipe (start from template or defaults)
     recipe = _default_recipe(model)
-    recipe_id = "recipe-" + "-".join(atom_names)[:60] + "-001"
+    recipe_id = _build_minimal_recipe_id(atom_names)
     recipe["id"] = recipe_id
     recipe["name"] = "Composed: " + ", ".join(atom_names)
 
@@ -132,6 +139,13 @@ def run_compose(args: argparse.Namespace) -> None:
 
     if not selected:
         print("[compose] No atoms were matched — recipe uses defaults only.")
+
+    try:
+        from recipes.compiler import normalize_recipe
+
+        recipe = normalize_recipe(recipe)
+    except Exception as exc:
+        print(f"[compose] Warning: could not normalize recipe ({exc})")
 
     # Step 4: Validate using compiler (if available)
     try:

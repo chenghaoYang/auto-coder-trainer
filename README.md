@@ -36,7 +36,7 @@
                    │ compiled config
 ┌──────────────────▼────────────────────────────┐
 │          Training Plane                        │
-│  trainers/sft (TRL) · trainers/rl (veRL)      │
+│  tinyzero launcher · trainers/sft · trainers/rl│
 │  evaluators/ · judge/ · results/              │
 └───────────────────────────────────────────────┘
 ```
@@ -49,19 +49,20 @@
 # Install
 git clone https://github.com/chenghaoYang/auto-coder-trainer.git
 cd auto-coder-trainer
-pip install -e ".[all,dev]"
+python3 -m pip install -e ".[dev,tinyzero]"
 
 # Four entry points
-act collect "coding agent trajectory training"    # Collect papers → method cards
-act compose --atoms swe-fuse,entropy-rl           # Compose → training recipe
-act train recipes/examples/baseline-sft.recipe.json  # Train → checkpoint + eval
-act report --experiment-id exp_001                # Report → technical analysis
+act collect recipes/registry/method_atoms.json    # Import method atoms → registry
+act compose --atoms swe-fuse,entropy-rl           # Compose → schema-clean recipe
+act train recipes/examples/baseline-sft.recipe.json  # Validate/plan → TinyZero launch bundle or native run
+act report --recipe-id recipe-baseline-sft-001    # Report → comparison / verdicts / ablations
 ```
 
 Or use `make`:
 
 ```bash
-make collect QUERY="coding agent training"
+make dev
+make collect QUERY=path/to/method_atoms.json
 make compose ATOMS="swe-fuse,entropy-rl"
 make train RECIPE=recipes/examples/baseline-sft.recipe.json
 make report EXP_ID=exp_001
@@ -76,6 +77,8 @@ claude
 > /train recipes/examples/trajectory-rl.recipe.json
 > /report exp_001
 ```
+
+`collect` is currently most useful in offline import mode (local `method_atoms.json` / JSONL / inline JSON). Automated paper discovery still depends on ARIS research skills. `train` now supports two modes: native backends still validate and plan, while `backend=tinyzero` compiles a ready-to-edit launch bundle (`env.sh`, `hydra-overrides.txt`, `run.sh`) for external baseline runs.
 
 ## Recipe IR
 
@@ -92,7 +95,7 @@ Every experiment is defined by a **Recipe IR** — a structured JSON file that c
   },
   "trainer": {
     "type": "grpo",
-    "backend": "verl",           // RL → veRL, SFT → TRL
+    "backend": "tinyzero",       // TinyZero/veRL-compatible baseline launcher
     "reward": { "type": "entropy_aware" }
   },
   "eval": { "benchmarks": ["swe-bench-verified"], "seeds": [42, 123, 456] },
@@ -132,8 +135,9 @@ auto-coder-trainer/
 │   ├── examples/         #   Example recipes
 │   └── compiler.py       #   Recipe → training config compiler
 ├── trainers/             # Training Plane
-│   ├── sft/              #   SFT trainer (TRL backend)
-│   ├── rl/               #   RL trainer (veRL backend)
+│   ├── tinyzero/         #   TinyZero/veRL-compatible launch bundle compiler
+│   ├── sft/              #   Native SFT trainer (TRL backend)
+│   ├── rl/               #   Native RL trainer (veRL backend)
 │   └── utils/            #   Seeds, checkpoints
 ├── evaluators/           # Evaluation harness
 │   ├── swe_bench.py      #   SWE-bench evaluator
@@ -215,8 +219,19 @@ if not monitor.is_healthy():
 
 | Backend | Used for | Framework |
 |---------|----------|-----------|
+| **TinyZero** | Baseline SFT / RL launch bundles | [Jiayi-Pan/TinyZero](https://github.com/Jiayi-Pan/TinyZero) |
 | **veRL** | RL / GRPO / PPO | [volcengine/verl](https://github.com/volcengine/verl) |
 | **TRL** | SFT / DPO | [huggingface/trl](https://github.com/huggingface/trl) |
+
+### TinyZero Migration
+
+TinyZero is the current baseline interface for both SFT and RL recipes in this repo. We migrate it at the launcher layer instead of vendoring the whole project:
+
+- keep our Recipe IR, judge, reports, and result DB as the control plane
+- compile `backend=tinyzero` recipes into TinyZero-style Hydra overrides and runnable shell scripts
+- stay compatible with the underlying veRL entry points that TinyZero itself builds on
+
+This keeps the framework maintainable while preserving baseline reproducibility.
 
 ## Status
 
@@ -226,12 +241,13 @@ This project is under active development. Current status:
 - [x] Recipe IR JSON Schema
 - [x] Project skeleton (trainers, evaluators, judge, results, CLI)
 - [x] Prompt cache infrastructure (builder, monitor, compaction, rules)
+- [x] CLI automation shell (`collect` import, `compose`, `train` execution plan / TinyZero bundle, `report`)
+- [x] Experiment judge logic and result DB helpers
+- [x] Report generation with verdict / ablation / multi-experiment comparison
+- [x] TinyZero baseline launcher for SFT / RL recipes
 - [ ] SFT trainer implementation (TRL)
 - [ ] RL trainer implementation (veRL)
 - [ ] SWE-bench evaluator integration
-- [ ] Experiment judge logic
-- [ ] Result DB operations
-- [ ] CLI pipeline integration
 - [ ] Case studies and reproductions
 
 ## License

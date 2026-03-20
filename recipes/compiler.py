@@ -1,7 +1,7 @@
 """Recipe Compiler — translates Recipe IR JSON into executable training configurations.
 
 Usage:
-    python -m recipes.compiler recipes/examples/baseline-sft.recipe.json
+    python3 -m recipes.compiler recipes/examples/baseline-sft.recipe.json
 
 Reads a Recipe IR JSON file, validates it against the schema, and compiles it
 into a training configuration that can be consumed by trainers/.
@@ -37,6 +37,37 @@ def load_schema() -> dict:
         return json.load(f)
 
 
+def normalize_recipe(recipe: dict) -> dict:
+    """Return a copy of *recipe* with ``None`` values removed recursively.
+
+    The schema treats a missing optional field as valid, but an explicit
+    ``null`` usually is not.  Normalisation keeps the recipe compact and
+    makes composed defaults schema-clean without forcing callers to care
+    about every optional field.
+    """
+
+    def _strip_none(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: cleaned
+                for key, cleaned in (
+                    (key, _strip_none(val))
+                    for key, val in value.items()
+                )
+                if cleaned is not None
+            }
+        if isinstance(value, list):
+            cleaned_items = []
+            for item in value:
+                cleaned = _strip_none(item)
+                if cleaned is not None:
+                    cleaned_items.append(cleaned)
+            return cleaned_items
+        return value
+
+    return _strip_none(recipe)
+
+
 def validate_recipe(recipe: dict, schema: dict) -> list[str]:
     """Validate a recipe against the schema. Returns list of errors (empty if valid)."""
     from jsonschema import Draft202012Validator
@@ -51,6 +82,7 @@ def validate_recipe(recipe: dict, schema: dict) -> list[str]:
 
 def compile_recipe(recipe: dict) -> TrainingConfig:
     """Compile a validated Recipe IR into an executable TrainingConfig."""
+    recipe = normalize_recipe(recipe)
     trainer = recipe["trainer"]
     model = recipe["model"]
     dataset = recipe.get("dataset", {})
@@ -95,13 +127,14 @@ def compile_recipe(recipe: dict) -> TrainingConfig:
 def main():
     """CLI entry point for recipe compilation."""
     if len(sys.argv) < 2:
-        print(f"Usage: python -m recipes.compiler <recipe.json>")
+        print(f"Usage: python3 -m recipes.compiler <recipe.json>")
         sys.exit(1)
 
     recipe_path = Path(sys.argv[1])
     with open(recipe_path) as f:
         recipe = json.load(f)
 
+    recipe = normalize_recipe(recipe)
     schema = load_schema()
     errors = validate_recipe(recipe, schema)
     if errors:

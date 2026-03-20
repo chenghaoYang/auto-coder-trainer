@@ -56,7 +56,7 @@
       "required": ["type"],
       "properties": {
         "type": { "enum": ["sft", "rl", "dpo", "grpo"] },
-        "backend": { "enum": ["trl", "verl"], "default": "verl", "description": "RL defaults to veRL, SFT defaults to TRL" },
+        "backend": { "enum": ["trl", "verl", "tinyzero"], "default": "verl", "description": "Native backends: RL -> veRL, SFT -> TRL. Use tinyzero for veRL-compatible baseline launch bundles." },
         "params": { "type": "object", "description": "Training hyperparameters (lr, epochs, batch_size, ppo_epochs, rollout_batch_size, etc.)" },
         "reward": {
           "type": "object",

@@ -43,6 +43,15 @@ class ResultDB:
                 d[key] = json.loads(d[key])
         return d
 
+    def _fetch_related_rows(self, table: str, experiment_id: str) -> list[dict[str, Any]]:
+        """Fetch rows from a child table keyed by experiment_id."""
+        assert self._conn is not None, "Database not connected"
+        cur = self._conn.execute(
+            f"SELECT * FROM {table} WHERE experiment_id = ? ORDER BY timestamp",
+            (experiment_id,),
+        )
+        return [self._row_to_dict(row) for row in cur.fetchall()]
+
     def insert_experiment(self, experiment: dict[str, Any]) -> str:
         """Insert a new experiment record. Returns experiment ID."""
         assert self._conn is not None, "Database not connected"
@@ -116,6 +125,30 @@ class ResultDB:
         self._conn.commit()
         return cur.lastrowid
 
+    def get_ablations_for_experiment(self, experiment_id: str) -> list[dict[str, Any]]:
+        """Return all ablation records linked to an experiment."""
+        return self._fetch_related_rows("ablations", experiment_id)
+
+    def get_verdicts_for_experiment(self, experiment_id: str) -> list[dict[str, Any]]:
+        """Return all verdict records linked to an experiment."""
+        return self._fetch_related_rows("verdicts", experiment_id)
+
+    def get_latest_verdict(self, experiment_id: str) -> dict[str, Any] | None:
+        """Return the newest verdict linked to an experiment."""
+        assert self._conn is not None, "Database not connected"
+        cur = self._conn.execute(
+            """SELECT *
+               FROM verdicts
+               WHERE experiment_id = ?
+               ORDER BY timestamp DESC, id DESC
+               LIMIT 1""",
+            (experiment_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_dict(row)
+
     def get_experiment(self, experiment_id: str) -> dict[str, Any] | None:
         """Get an experiment by ID."""
         assert self._conn is not None, "Database not connected"
@@ -127,6 +160,17 @@ class ResultDB:
             return None
         return self._row_to_dict(row)
 
+    def get_experiment_bundle(self, experiment_id: str) -> dict[str, Any]:
+        """Return an experiment together with its ablations and verdicts."""
+        experiment = self.get_experiment(experiment_id)
+        if experiment is None:
+            return {"experiment": None, "ablations": [], "verdicts": []}
+        return {
+            "experiment": experiment,
+            "ablations": self.get_ablations_for_experiment(experiment_id),
+            "verdicts": self.get_verdicts_for_experiment(experiment_id),
+        }
+
     def find_by_recipe(self, recipe_id: str) -> list[dict[str, Any]]:
         """Find all experiments for a given recipe."""
         assert self._conn is not None, "Database not connected"
@@ -135,6 +179,13 @@ class ResultDB:
             (recipe_id,),
         )
         return [self._row_to_dict(row) for row in cur.fetchall()]
+
+    def find_by_recipe_with_details(self, recipe_id: str) -> list[dict[str, Any]]:
+        """Find all experiments for a recipe and attach ablation / verdict data."""
+        return [
+            self.get_experiment_bundle(experiment["id"])
+            for experiment in self.find_by_recipe(recipe_id)
+        ]
 
     def find_by_config_hash(self, config_hash: str) -> list[dict[str, Any]]:
         """Find experiments with matching config hash (dedup check)."""

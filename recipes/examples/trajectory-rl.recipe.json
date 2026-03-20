@@ -24,7 +24,7 @@
   },
   "trainer": {
     "type": "grpo",
-    "backend": "verl",
+    "backend": "tinyzero",
     "params": {
       "lr": 1e-6,
       "ppo_epochs": 4,

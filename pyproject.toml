@@ -9,7 +9,9 @@ description = "Research Operating System for Coding Agent Training — from pape
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "jsonschema>=4.20",
+]
 
 [project.optional-dependencies]
 sft = [
@@ -20,6 +22,9 @@ sft = [
     "accelerate>=1.0.0",
 ]
 rl = [
+    "verl>=0.3.0",
+]
+tinyzero = [
     "verl>=0.3.0",
 ]
 eval = [
@@ -36,7 +41,6 @@ all = [
 ]
 dev = [
     "pytest>=8.0",
-    "jsonschema>=4.20",
     "ruff>=0.7.0",
 ]
 
@@ -49,3 +53,6 @@ include = ["trainers*", "evaluators*", "judge*", "results*", "cli*", "recipes*",
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

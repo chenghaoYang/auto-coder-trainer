@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -269,7 +270,7 @@ def _setup_local_env(env_config: dict[str, Any], timeout: int) -> dict[str, Any]
             full_code += "\n\n" + test_code
         try:
             result = subprocess.run(
-                ["python", "-c", full_code],
+                [sys.executable, "-c", full_code],
                 capture_output=True,
                 text=True,
                 timeout=timeout,

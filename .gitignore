@@ -24,7 +24,10 @@ build/
 venv/
 
 # Data
-data/results.db
+data/*.db
+outputs/
+reports/
 
 # pytest
 .pytest_cache/
+.coverage
