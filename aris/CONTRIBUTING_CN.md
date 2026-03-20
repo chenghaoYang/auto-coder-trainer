@@ -1,6 +1,6 @@
 # 为 Auto-claude-code-research-in-sleep (ARIS) 做贡献
 
-[English](CONTRIBUTING.md) | 中文版
+[English](CONTRIBUTING.md) | [中文版](CONTRIBUTING_CN.md)
 
 感谢你对 ARIS 项目的关注！本文档提供了参与贡献的指南和说明。
 

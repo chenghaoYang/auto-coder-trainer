@@ -5,6 +5,16 @@ description: "Autonomously improve a generated paper via Claude review through c
 
 > Override for Codex users who want **Claude Code**, not a second Codex agent, to act as the reviewer. Install this package **after** `skills/skills-codex/*`.
 
+## Prerequisites
+
+- Install the base Codex-native skills first: copy `skills/skills-codex/*` into `~/.codex/skills/`.
+- Then install this overlay package: copy `skills/skills-codex-claude-review/*` into `~/.codex/skills/` and allow it to overwrite the same skill names.
+- Register the local reviewer bridge:
+  ```bash
+  codex mcp add claude-review -- python3 ~/.codex/mcp-servers/claude-review/server.py
+  ```
+- This gives Codex access to `mcp__claude-review__review_start`, `mcp__claude-review__review_reply_start`, and `mcp__claude-review__review_status`.
+
 # Auto Paper Improvement Loop: Review → Fix → Recompile
 
 Autonomously improve the paper at: **$ARGUMENTS**
@@ -239,7 +249,7 @@ Create `PAPER_IMPROVEMENT_LOG.md` in the paper directory:
 ## Round 1 Review & Fixes
 
 <details>
-<summary>Claude review Review (Round 1)</summary>
+<summary>Claude Review (Round 1)</summary>
 
 [Full raw review text, verbatim]
 
@@ -253,7 +263,7 @@ Create `PAPER_IMPROVEMENT_LOG.md` in the paper directory:
 ## Round 2 Review & Fixes
 
 <details>
-<summary>Claude review Review (Round 2)</summary>
+<summary>Claude Review (Round 2)</summary>
 
 [Full raw review text, verbatim]
 

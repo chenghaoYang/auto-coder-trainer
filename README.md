@@ -55,7 +55,7 @@ python3 -m pip install -e ".[dev,tinyzero]"
 act collect recipes/registry/method_atoms.json    # Import method atoms → registry
 act compose --atoms swe-fuse,entropy-rl           # Compose → schema-clean recipe
 act train recipes/examples/baseline-sft.recipe.json  # Validate/plan → TinyZero launch bundle or native run
-act report --recipe-id recipe-baseline-sft-001    # Report → comparison / verdicts / ablations
+act report --recipe-id recipe-baseline-sft-001    # Report → comparison / verdicts / ablations (also: --experiment-id)
 ```
 
 Or use `make`:
@@ -246,8 +246,8 @@ This project is under active development. Current status:
 - [x] Report generation with verdict / ablation / multi-experiment comparison
 - [x] TinyZero baseline launcher for SFT / RL recipes
 - [ ] SFT trainer implementation (TRL)
-- [ ] RL trainer implementation (veRL)
-- [ ] SWE-bench evaluator integration
+- [x] RL trainer implementation (veRL)
+- [x] SWE-bench evaluator integration
 - [ ] Case studies and reproductions
 
 ## License

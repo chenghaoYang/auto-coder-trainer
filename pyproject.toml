@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder-trainer"
@@ -48,7 +48,7 @@ dev = [
 act = "cli.main:main"
 
 [tool.setuptools.packages.find]
-include = ["trainers*", "evaluators*", "judge*", "results*", "cli*", "recipes*", "prompt_cache*"]
+include = ["trainers*", "evaluators*", "judge*", "results*", "cli*", "recipes*", "prompt_cache*", "skills*"]
 
 [tool.ruff]
 line-length = 100

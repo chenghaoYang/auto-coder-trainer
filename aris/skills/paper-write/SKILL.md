@@ -53,6 +53,8 @@ The skill includes conference templates in `templates/`. Select based on TARGET_
 % Use [accepted] for camera-ready
 ```
 
+> **Note:** LaTeX style files (e.g., `iclr2026_conference.sty`) are venue-specific and not bundled in this repository. Download them from the respective conference websites before running this skill.
+
 ### Project Structure
 
 Generate this file structure:
