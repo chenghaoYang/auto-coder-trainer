@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "auto-coder-trainer"
+version = "0.1.0"
+description = "Research Operating System for Coding Agent Training — from papers to trained models in a closed loop"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+sft = [
+    "trl>=0.12.0",
+    "transformers>=4.45.0",
+    "datasets>=3.0.0",
+    "peft>=0.13.0",
+    "accelerate>=1.0.0",
+]
+rl = [
+    "verl>=0.3.0",
+]
+eval = [
+    "swebench>=2.0.0",
+]
+all = [
+    "trl>=0.12.0",
+    "transformers>=4.45.0",
+    "datasets>=3.0.0",
+    "peft>=0.13.0",
+    "accelerate>=1.0.0",
+    "verl>=0.3.0",
+    "swebench>=2.0.0",
+]
+dev = [
+    "pytest>=8.0",
+    "jsonschema>=4.20",
+    "ruff>=0.7.0",
+]
+
+[project.scripts]
+act = "cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["trainers*", "evaluators*", "judge*", "results*", "cli*", "recipes*", "prompt_cache*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

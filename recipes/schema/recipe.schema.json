@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Training Recipe",
+  "description": "Structured intermediate representation for coding agent training experiments. Connects the ARIS Research Plane to the Training Plane.",
+  "type": "object",
+  "required": ["id", "name", "model", "dataset", "trainer"],
+  "properties": {
+    "id": { "type": "string", "description": "Unique recipe identifier (e.g., recipe-swe-fuse-sft-001)" },
+    "name": { "type": "string", "description": "Human-readable recipe name" },
+    "version": { "type": "string", "default": "1.0" },
+    "source_papers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "arXiv IDs or DOIs of source papers"
+    },
+    "model": {
+      "type": "object",
+      "required": ["base"],
+      "properties": {
+        "base": { "type": "string", "description": "HuggingFace model ID" },
+        "size": { "type": "string", "description": "Model size label (e.g., 7B, 32B)" },
+        "adapter": { "enum": ["full", "lora", "qlora"], "default": "full" }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "path"],
+            "properties": {
+              "name": { "type": "string" },
+              "path": { "type": "string", "description": "HF dataset ID or local path" },
+              "mix_weight": { "type": "number", "default": 1.0 }
+            }
+          }
+        },
+        "filters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": { "enum": ["issue_free", "length", "quality_score", "language", "custom"] },
+              "params": { "type": "object" }
+            }
+          }
+        },
+        "total_samples": { "type": "integer" }
+      }
+    },
+    "trainer": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["sft", "rl", "dpo", "grpo"] },
+        "backend": { "enum": ["trl", "verl"], "default": "verl", "description": "RL defaults to veRL, SFT defaults to TRL" },
+        "params": { "type": "object", "description": "Training hyperparameters (lr, epochs, batch_size, ppo_epochs, rollout_batch_size, etc.)" },
+        "reward": {
+          "type": "object",
+          "properties": {
+            "type": { "enum": ["binary_pass", "weighted_pass", "entropy_bonus", "entropy_aware", "length_penalty", "composite"] },
+            "components": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+    "eval": {
+      "type": "object",
+      "properties": {
+        "benchmarks": {
+          "type": "array",
+          "items": { "enum": ["swe-bench-lite", "swe-bench-verified", "swe-rebench", "humaneval", "mbpp", "custom"] }
+        },
+        "metrics": { "type": "array", "items": { "type": "string" } },
+        "seeds": { "type": "array", "items": { "type": "integer" }, "default": [42, 123, 456] }
+      }
+    },
+    "ablation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "variable", "values"],
+        "properties": {
+          "name": { "type": "string" },
+          "variable": { "type": "string", "description": "JSON path to the variable being ablated" },
+          "values": { "type": "array" }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "max_gpu_hours": { "type": "number" },
+        "gpu_type": { "type": "string" },
+        "max_cost_usd": { "type": "number" }
+      }
+    }
+  }
+}

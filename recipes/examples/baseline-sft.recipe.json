@@ -1,0 +1,52 @@
+{
+  "id": "recipe-baseline-sft-001",
+  "name": "Baseline SFT on SWE-bench Trajectories",
+  "version": "1.0",
+  "source_papers": ["2410.01021"],
+  "model": {
+    "base": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "size": "7B",
+    "adapter": "lora"
+  },
+  "dataset": {
+    "sources": [
+      {
+        "name": "swe-bench-trajectories",
+        "path": "bigcode/swe-bench-trajectories",
+        "mix_weight": 1.0
+      }
+    ],
+    "filters": [
+      { "type": "quality_score", "params": { "min_score": 0.7 } }
+    ],
+    "total_samples": 10000
+  },
+  "trainer": {
+    "type": "sft",
+    "backend": "trl",
+    "params": {
+      "lr": 2e-5,
+      "epochs": 3,
+      "batch_size": 4,
+      "gradient_accumulation_steps": 8,
+      "warmup_ratio": 0.1
+    }
+  },
+  "eval": {
+    "benchmarks": ["swe-bench-lite", "humaneval"],
+    "metrics": ["resolve_rate", "pass@1"],
+    "seeds": [42, 123, 456]
+  },
+  "ablation": [
+    {
+      "name": "learning_rate_sweep",
+      "variable": "trainer.params.lr",
+      "values": [1e-5, 2e-5, 5e-5]
+    }
+  ],
+  "budget": {
+    "max_gpu_hours": 24,
+    "gpu_type": "A100-80GB",
+    "max_cost_usd": 50
+  }
+}

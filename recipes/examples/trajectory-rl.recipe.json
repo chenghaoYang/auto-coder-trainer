@@ -1,0 +1,61 @@
+{
+  "id": "recipe-trajectory-rl-001",
+  "name": "GRPO on Coding Trajectories with Entropy-Aware Reward",
+  "version": "1.0",
+  "source_papers": ["2502.18449", "2503.01735"],
+  "model": {
+    "base": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "size": "7B",
+    "adapter": "full"
+  },
+  "dataset": {
+    "sources": [
+      {
+        "name": "swe-rebench-trajectories",
+        "path": "openhands/swe-rebench-openhands-trajectories",
+        "mix_weight": 1.0
+      }
+    ],
+    "filters": [
+      { "type": "issue_free", "params": {} },
+      { "type": "length", "params": { "max_turns": 30 } }
+    ],
+    "total_samples": 5000
+  },
+  "trainer": {
+    "type": "grpo",
+    "backend": "verl",
+    "params": {
+      "lr": 1e-6,
+      "ppo_epochs": 4,
+      "rollout_batch_size": 256,
+      "kl_coeff": 0.05,
+      "entropy_coeff": 0.01,
+      "gradient_accumulation_steps": 4
+    },
+    "reward": {
+      "type": "entropy_aware",
+      "components": [
+        { "type": "binary_pass", "weight": 0.7 },
+        { "type": "entropy_bonus", "weight": 0.3 }
+      ]
+    }
+  },
+  "eval": {
+    "benchmarks": ["swe-bench-verified", "swe-rebench"],
+    "metrics": ["resolve_rate", "pass@1"],
+    "seeds": [42, 123, 456]
+  },
+  "ablation": [
+    {
+      "name": "reward_type_ablation",
+      "variable": "trainer.reward.type",
+      "values": ["binary_pass", "entropy_aware", "composite"]
+    }
+  ],
+  "budget": {
+    "max_gpu_hours": 48,
+    "gpu_type": "A100-80GB",
+    "max_cost_usd": 100
+  }
+}

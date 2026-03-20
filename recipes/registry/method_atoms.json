@@ -1,0 +1,5 @@
+{
+  "$schema": "../schema/recipe.schema.json",
+  "description": "Registry of reusable method atoms extracted from papers. Each atom is a composable building block for training recipes.",
+  "atoms": []
+}
