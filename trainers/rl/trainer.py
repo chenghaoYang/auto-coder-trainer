@@ -312,23 +312,20 @@ class RLTrainer(BaseTrainer):
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        device_map = "auto" if torch.cuda.is_available() else None
+
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
-            trust_remote_code=True,
+            model_name, torch_dtype=dtype, device_map=device_map, trust_remote_code=True,
         )
 
         # Apply LoRA if requested
         if adapter in ("lora", "qlora"):
             model = self._apply_lora(model, adapter)
 
-        # Reference model for KL (frozen copy)
+        # Reference model for KL divergence (frozen copy)
         ref_model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.is_available() else None,
-            trust_remote_code=True,
+            model_name, torch_dtype=dtype, device_map=device_map, trust_remote_code=True,
         )
         ref_model.eval()
         for p in ref_model.parameters():
@@ -338,6 +335,15 @@ class RLTrainer(BaseTrainer):
             [p for p in model.parameters() if p.requires_grad],
             lr=lr,
         )
+
+        # Simple linear warmup scheduler
+        warmup_ratio = training_params.get("warmup_ratio", 0.03)
+        warmup_steps = max(1, int(num_iterations * warmup_ratio))
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return step / warmup_steps
+            return 1.0
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
         device = next(model.parameters()).device
         reward_fn = self._reward_fn
@@ -353,39 +359,48 @@ class RLTrainer(BaseTrainer):
             if not batch_prompts:
                 batch_prompts = self._prompts[:rollout_batch_size]
 
-            # --- Rollout phase: generate G responses per prompt ---
-            iteration_rewards: list[float] = []
-            iteration_kls: list[float] = []
-            policy_losses: list[torch.Tensor] = []
+            # ----------------------------------------------------------
+            # Rollout phase (no grad): generate G responses per prompt,
+            # collect rewards and per-token log-probs under both policy
+            # and reference model.
+            # ----------------------------------------------------------
+            # Each element: {generated_ids, policy_logprobs, ref_logprobs,
+            #                reward, advantage}  (all detached)
+            rollout_buffer: list[dict] = []
+            group_rewards_all: list[list[float]] = []
 
+            model.eval()
             for prompt_data in batch_prompts:
                 prompt_text = prompt_data.get("prompt", "")
                 tests = prompt_data.get("tests", [])
 
                 inputs = tokenizer(prompt_text, return_tensors="pt", truncation=True, max_length=2048)
                 inputs = {k: v.to(device) for k, v in inputs.items()}
+                prompt_len = inputs["input_ids"].shape[1]
 
-                group_rewards = []
-                group_logprobs = []
+                group_rewards: list[float] = []
+                group_entries: list[dict] = []
 
                 for _g in range(group_size):
                     # Generate response
                     with torch.no_grad():
-                        outputs = model.generate(
+                        gen_out = model.generate(
                             **inputs,
                             max_new_tokens=max_new_tokens,
                             do_sample=True,
                             temperature=0.7,
                             top_p=0.95,
                             return_dict_in_generate=True,
-                            output_scores=True,
                         )
 
-                    generated_ids = outputs.sequences[0][inputs["input_ids"].shape[1]:]
+                    full_ids = gen_out.sequences[0]          # [prompt + response]
+                    generated_ids = full_ids[prompt_len:]    # [response only]
+                    if generated_ids.numel() == 0:
+                        continue
                     response_text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
-                    # Compute reward
-                    trajectory = {
+                    # Compute reward via environment execution
+                    trajectory: dict = {
                         "response": response_text,
                         "tests_passed": 0,
                         "tests_total": 0,
@@ -402,48 +417,117 @@ class RLTrainer(BaseTrainer):
                     reward = reward_fn.compute(trajectory)
                     group_rewards.append(reward)
 
-                    # Compute log-prob of generated tokens under policy
+                    # Per-token log-probs under policy and reference (no grad)
                     with torch.no_grad():
-                        logits = model(outputs.sequences).logits[0]
-                    gen_logits = logits[inputs["input_ids"].shape[1] - 1:-1]
-                    log_probs = torch.log_softmax(gen_logits, dim=-1)
-                    token_logprobs = log_probs.gather(1, generated_ids.unsqueeze(1)).squeeze(1)
-                    group_logprobs.append(token_logprobs)
+                        policy_logits = model(full_ids.unsqueeze(0)).logits[0]
+                        ref_logits = ref_model(full_ids.unsqueeze(0)).logits[0]
 
-                # --- GRPO advantage: normalise within group ---
-                rewards_t = torch.tensor(group_rewards, device=device)
+                    # Align: logit at position t predicts token at position t+1.
+                    # For generated tokens [prompt_len .. end], the predicting
+                    # logits are at positions [prompt_len-1 .. end-1].
+                    gen_policy_logits = policy_logits[prompt_len - 1:-1]   # [gen_len, vocab]
+                    gen_ref_logits = ref_logits[prompt_len - 1:-1]
+
+                    policy_lp = torch.log_softmax(gen_policy_logits, dim=-1)
+                    ref_lp = torch.log_softmax(gen_ref_logits, dim=-1)
+
+                    # Gather log-probs for the actual generated tokens
+                    token_policy_lp = policy_lp.gather(1, generated_ids.unsqueeze(1)).squeeze(1)
+                    token_ref_lp = ref_lp.gather(1, generated_ids.unsqueeze(1)).squeeze(1)
+
+                    group_entries.append({
+                        "generated_ids": generated_ids.detach(),
+                        "full_ids": full_ids.detach(),
+                        "prompt_len": prompt_len,
+                        "policy_logprobs": token_policy_lp.detach(),
+                        "ref_logprobs": token_ref_lp.detach(),
+                        "reward": reward,
+                    })
+
+                if not group_entries:
+                    continue
+
+                # GRPO advantage: normalise rewards within the group
+                rewards_t = torch.tensor([e["reward"] for e in group_entries], device=device)
                 if rewards_t.std() > 1e-8:
                     advantages = (rewards_t - rewards_t.mean()) / rewards_t.std()
                 else:
                     advantages = rewards_t - rewards_t.mean()
 
-                # Policy gradient loss: -E[advantage * logprob]
-                for g_idx in range(group_size):
-                    lp = group_logprobs[g_idx]
-                    adv = advantages[g_idx]
-                    policy_losses.append(-adv * lp.mean())
+                for g_idx, entry in enumerate(group_entries):
+                    entry["advantage"] = advantages[g_idx].item()
+                    rollout_buffer.append(entry)
 
-                iteration_rewards.extend(group_rewards)
+                group_rewards_all.append(group_rewards)
 
-            # --- PPO update epochs ---
+            if not rollout_buffer:
+                logger.warning("Iteration %d: empty rollout buffer, skipping", iteration + 1)
+                continue
+
+            # ----------------------------------------------------------
+            # PPO update epochs: recompute policy log-probs (with grad)
+            # and optimise the clipped surrogate + KL penalty.
+            # ----------------------------------------------------------
+            model.train()
+            iteration_kls: list[float] = []
+
             for _epoch in range(ppo_epochs):
-                total_loss = torch.stack(policy_losses).mean()
-
-                # KL penalty (approximate: use mean log-prob ratio)
-                # Simplified: we skip full KL here for the built-in loop
-                kl_approx = torch.tensor(0.0, device=device)
-                loss = total_loss + kl_coeff * kl_approx
-
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
                 optimizer.zero_grad()
+                accum_count = 0
 
-            avg_reward = sum(iteration_rewards) / len(iteration_rewards) if iteration_rewards else 0.0
+                for buf_idx, entry in enumerate(rollout_buffer):
+                    full_ids = entry["full_ids"]
+                    prompt_len = entry["prompt_len"]
+                    generated_ids = entry["generated_ids"]
+                    old_logprobs = entry["policy_logprobs"]      # detached from rollout
+                    ref_logprobs = entry["ref_logprobs"]
+                    advantage = entry["advantage"]
+
+                    # Recompute log-probs under current policy (with grad)
+                    logits = model(full_ids.unsqueeze(0)).logits[0]
+                    new_lp = torch.log_softmax(logits[prompt_len - 1:-1], dim=-1)
+                    new_token_lp = new_lp.gather(1, generated_ids.unsqueeze(1)).squeeze(1)
+
+                    # Importance ratio
+                    ratio = torch.exp(new_token_lp - old_logprobs)
+
+                    # Clipped surrogate (per-token, then mean)
+                    clip_range = training_params.get("clip_range", 0.2)
+                    surr1 = ratio * advantage
+                    surr2 = torch.clamp(ratio, 1.0 - clip_range, 1.0 + clip_range) * advantage
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    # KL penalty: approx KL(π_new || π_ref) per token
+                    kl = (new_token_lp - ref_logprobs).mean()
+                    iteration_kls.append(kl.item())
+
+                    loss = (policy_loss + kl_coeff * kl) / grad_accum
+                    loss.backward()
+                    accum_count += 1
+
+                    # Step every grad_accum entries
+                    if accum_count % grad_accum == 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                # Flush remaining accumulated gradients
+                if accum_count % grad_accum != 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+            scheduler.step()
+
+            # Logging
+            flat_rewards = [r for g in group_rewards_all for r in g]
+            avg_reward = sum(flat_rewards) / len(flat_rewards) if flat_rewards else 0.0
+            avg_kl = sum(iteration_kls) / len(iteration_kls) if iteration_kls else 0.0
             all_rewards.append(avg_reward)
+            all_kls.append(avg_kl)
             logger.info(
-                "Iteration %d/%d — avg_reward=%.4f, batch_size=%d",
-                iteration + 1, num_iterations, avg_reward, len(batch_prompts),
+                "Iteration %d/%d — avg_reward=%.4f, avg_kl=%.4f, batch_size=%d",
+                iteration + 1, num_iterations, avg_reward, avg_kl, len(batch_prompts),
             )
 
         # Save the trained model
@@ -455,6 +539,7 @@ class RLTrainer(BaseTrainer):
         final_metrics = {
             "avg_reward": sum(all_rewards) / len(all_rewards) if all_rewards else 0.0,
             "final_reward": all_rewards[-1] if all_rewards else 0.0,
+            "avg_kl": sum(all_kls) / len(all_kls) if all_kls else 0.0,
             "num_iterations": num_iterations,
             "total_rollouts": num_iterations * rollout_batch_size * group_size,
         }

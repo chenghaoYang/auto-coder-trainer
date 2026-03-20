@@ -98,6 +98,8 @@ class LengthPenaltyReward(BaseReward):
     """
 
     def __init__(self, max_length: int = 16384, coeff: float = 0.1):
+        if max_length <= 0:
+            raise ValueError(f"max_length must be positive, got {max_length}")
         self.max_length = max_length
         self.coeff = coeff
 

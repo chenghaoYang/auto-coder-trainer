@@ -255,10 +255,13 @@ def setup_rollout_env(env_config: dict[str, Any]) -> dict[str, Any]:
 
 def _setup_local_env(env_config: dict[str, Any], timeout: int) -> dict[str, Any]:
     """Set up a local subprocess-based execution environment."""
+    import atexit
+    import shutil
     import subprocess
     import tempfile
 
     workdir = tempfile.mkdtemp(prefix="rl_rollout_")
+    atexit.register(shutil.rmtree, workdir, True)
 
     def execute_fn(code: str, test_code: str = "") -> dict[str, Any]:
         full_code = code
@@ -330,7 +333,7 @@ def _setup_docker_env(env_config: dict[str, Any], timeout: int) -> dict[str, Any
         except sp.TimeoutExpired:
             return {
                 "stdout": "",
-                "stderr": f"Docker timeout after {timeout}s",
+                "stderr": f"Docker timeout after {timeout + 30}s",
                 "exit_code": -1,
                 "tests_passed": 0,
                 "tests_total": 0,
@@ -361,15 +364,17 @@ def _parse_test_output(output: str) -> tuple[int, int]:
     """
     import re
 
-    # pytest style: "5 passed, 2 failed, 1 error"
+    # pytest style: "5 passed, 2 failed, 1 error, 3 skipped"
     pytest_passed = re.search(r"(\d+)\s+passed", output)
     pytest_failed = re.search(r"(\d+)\s+failed", output)
     pytest_error = re.search(r"(\d+)\s+error", output)
-    if pytest_passed or pytest_failed:
+    pytest_skipped = re.search(r"(\d+)\s+skipped", output)
+    if pytest_passed or pytest_failed or pytest_error:
         passed = int(pytest_passed.group(1)) if pytest_passed else 0
         failed = int(pytest_failed.group(1)) if pytest_failed else 0
         errors = int(pytest_error.group(1)) if pytest_error else 0
-        total = passed + failed + errors
+        skipped = int(pytest_skipped.group(1)) if pytest_skipped else 0
+        total = passed + failed + errors + skipped
         return passed, total
 
     # unittest style: "Ran N tests" + "OK" or "FAILED"

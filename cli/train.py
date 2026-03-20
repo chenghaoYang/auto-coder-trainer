@@ -90,15 +90,15 @@ def run_train(args: argparse.Namespace) -> None:
     try:
         if config.trainer_type == "sft":
             try:
-                from trainers.sft_trainer import SFTTrainerBackend
-                trainer = SFTTrainerBackend(config.__dict__, output_dir)
+                from trainers.sft import SFTTrainer
+                trainer = SFTTrainer(config.__dict__, output_dir)
                 print("[train] Using SFT trainer (TRL backend).")
             except ImportError:
                 print("[train] SFT trainer module not yet available.")
-        elif config.trainer_type == "rl":
+        elif config.trainer_type in ("rl", "grpo"):
             try:
-                from trainers.rl_trainer import RLTrainerBackend
-                trainer = RLTrainerBackend(config.__dict__, output_dir)
+                from trainers.rl import RLTrainer
+                trainer = RLTrainer(config.__dict__, output_dir)
                 print("[train] Using RL trainer (veRL backend).")
             except ImportError:
                 print("[train] RL trainer module not yet available.")
@@ -109,7 +109,7 @@ def run_train(args: argparse.Namespace) -> None:
 
     if trainer is None:
         print("[train] No trainer available — cannot proceed with training.")
-        print("[train] Implement trainers/sft_trainer.py or trainers/rl_trainer.py to enable training.")
+        print("[train] Implement trainers/sft/trainer.py or trainers/rl/trainer.py to enable training.")
         return
 
     # ------------------------------------------------------------------
