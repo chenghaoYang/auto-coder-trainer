@@ -9,13 +9,49 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
+from typing import Any
 
 from trainers.base import TrainResult
+
+
+_EXTERNAL_PREPARED_BACKENDS = {"tinyzero", "openr1", "agent_distill", "redi"}
 
 
 def _plan_dir(output_dir: Path, recipe_id: str) -> Path:
     """Return the directory used to store execution-plan artifacts."""
     return output_dir / recipe_id
+
+
+def _backend_label(backend: str) -> str:
+    labels = {
+        "tinyzero": "TinyZero",
+        "openr1": "Open-R1",
+        "agent_distill": "Agent Distillation",
+        "redi": "REDI",
+    }
+    return labels.get(backend, backend)
+
+
+def _launcher_next_steps(launcher: dict[str, Any]) -> list[str]:
+    requirements = launcher.get("requirements")
+    if isinstance(requirements, list) and requirements:
+        return [str(item) for item in requirements]
+    return [
+        "Inspect the generated launcher bundle and fill in any placeholder environment variables.",
+        "Install the upstream backend's dependencies on the training machine.",
+        "Run the generated run.sh script from the launcher bundle directory.",
+    ]
+
+
+def _launcher_artifacts(backend: str, launcher_paths: dict[str, str] | None) -> list[dict]:
+    if not launcher_paths:
+        return []
+    artifact_rows = []
+    for key, path in launcher_paths.items():
+        if key == "bundle_dir":
+            continue
+        artifact_rows.append({"kind": f"{backend}_{key}", "path": path})
+    return artifact_rows
 
 
 def _build_execution_plan(
@@ -32,11 +68,7 @@ def _build_execution_plan(
 
     plan_dir = _plan_dir(output_dir, config.recipe_id)
     if launcher:
-        next_steps = [
-            "Open the generated env.sh and map ACT_TRAIN_FILE / ACT_VAL_FILE to real parquet files.",
-            "Install a TinyZero/veRL-compatible environment on the training machine.",
-            "Launch the generated run.sh script and append any extra Hydra overrides if needed.",
-        ]
+        next_steps = _launcher_next_steps(launcher)
         mode = "dry_run" if dry_run else "prepared"
     else:
         next_steps = [
@@ -56,6 +88,7 @@ def _build_execution_plan(
         },
         "model": normalize_recipe(config.model_config),
         "dataset": normalize_recipe(config.data_config),
+        "distill": normalize_recipe(getattr(config, "distill_config", {})),
         "eval": normalize_recipe(config.eval_config),
         "ablation": normalize_recipe(config.ablation_configs),
         "budget": normalize_recipe(config.budget),
@@ -111,6 +144,18 @@ def _format_execution_plan(plan: dict) -> str:
             lines.append(
                 f"- {abl.get('name', '?')}: {abl.get('variable', '?')} -> {abl.get('values', [])}"
             )
+
+    if plan.get("distill"):
+        lines.extend(
+            [
+                "",
+                "## Distillation",
+                f"- Strategy: {plan['distill'].get('strategy', 'trajectory')}",
+                f"- Teacher: {plan['distill'].get('teacher_model', 'unspecified')}",
+                f"- Teacher mode: {plan['distill'].get('teacher_mode', 'offline_dataset')}",
+                f"- Stages: {', '.join(plan['distill'].get('stages', [])) or 'positive_sft'}",
+            ]
+        )
 
     launcher = plan.get("launcher")
     if launcher:
@@ -601,11 +646,24 @@ def run_train(args: argparse.Namespace) -> None:
         except Exception as exc:
             print(f"[train] Error building TinyZero launch bundle: {exc}")
             return
+    elif config.backend in (_EXTERNAL_PREPARED_BACKENDS - {"tinyzero"}):
+        try:
+            from trainers.upstream import (
+                build_upstream_launcher_bundle,
+                write_upstream_launcher_bundle,
+            )
+
+            launcher_bundle = build_upstream_launcher_bundle(config.__dict__, output_dir)
+            launcher_paths = write_upstream_launcher_bundle(launcher_bundle)
+            print(f"[train] {_backend_label(config.backend)} launch bundle ready: {launcher_paths['run_script']}")
+        except Exception as exc:
+            print(f"[train] Error building {_backend_label(config.backend)} launch bundle: {exc}")
+            return
 
     if dry_run:
         plan_reason = "dry-run requested"
-    elif config.backend == "tinyzero":
-        plan_reason = "TinyZero launch bundle prepared"
+    elif launcher_bundle is not None:
+        plan_reason = f"{_backend_label(config.backend)} launch bundle prepared"
     else:
         plan_reason = "trainer backend not yet implemented"
     execution_plan = _build_execution_plan(
@@ -664,7 +722,7 @@ def run_train(args: argparse.Namespace) -> None:
             print(f"[train]   Launch  : {launcher_paths['run_script']}")
         return
 
-    if config.backend == "tinyzero":
+    if launcher_bundle is not None:
         json_path, md_path = _write_execution_plan(execution_plan, output_dir)
         if db is not None and config_hash is not None:
             db.insert_experiment(
@@ -690,28 +748,25 @@ def run_train(args: argparse.Namespace) -> None:
                 {"kind": "execution_plan_json", "path": str(json_path)},
                 {"kind": "execution_plan_markdown", "path": str(md_path)},
             ]
-            if launcher_paths:
-                artifact_rows.extend(
-                    [
-                        {"kind": "tinyzero_launcher_json", "path": launcher_paths["launcher_json"]},
-                        {"kind": "tinyzero_env", "path": launcher_paths["env"]},
-                        {"kind": "tinyzero_run_script", "path": launcher_paths["run_script"]},
-                        {"kind": "tinyzero_hydra_overrides", "path": launcher_paths["hydra_overrides"]},
-                    ]
-                )
+            artifact_rows.extend(_launcher_artifacts(config.backend, launcher_paths))
             _persist_artifacts(db, recipe_id, experiment_id, artifact_rows)
             ledger_paths = _write_task_ledger(db, recipe_id, experiment_id, Path(execution_plan["artifact_dir"]))
             if ledger_paths:
                 print(f"[train] Task ledger written to {ledger_paths[0]}")
             db.close()
             db = None
-        print("[train] TinyZero backend selected — external launch bundle prepared.")
+        print(f"[train] {_backend_label(config.backend)} backend selected — external launch bundle prepared.")
         print(f"[train] Execution plan written to {json_path}")
         print(f"[train] Plan summary written to {md_path}")
         if launcher_paths:
-            print(f"[train] Launcher JSON  : {launcher_paths['launcher_json']}")
-            print(f"[train] Env template   : {launcher_paths['env']}")
-            print(f"[train] Run script     : {launcher_paths['run_script']}")
+            if launcher_paths.get("launcher_json"):
+                print(f"[train] Launcher JSON  : {launcher_paths['launcher_json']}")
+            if launcher_paths.get("env"):
+                print(f"[train] Env template   : {launcher_paths['env']}")
+            if launcher_paths.get("run_script"):
+                print(f"[train] Run script     : {launcher_paths['run_script']}")
+            if launcher_paths.get("notes"):
+                print(f"[train] Notes          : {launcher_paths['notes']}")
         print("\n[train] === Summary ===")
         print(f"[train] Recipe     : {recipe_id}")
         print(f"[train] Trainer    : {config.trainer_type} / {config.backend}")
@@ -732,6 +787,14 @@ def run_train(args: argparse.Namespace) -> None:
                 print("[train] Using SFT trainer (TRL backend).")
             except ImportError:
                 print("[train] SFT trainer module not yet available.")
+                trainer_init_error = "trainer module not available"
+        elif config.trainer_type == "distill":
+            try:
+                from trainers.distill import DistillTrainer
+                trainer = DistillTrainer(config.__dict__, output_dir)
+                print("[train] Using distillation trainer (trajectory/process distillation backend).")
+            except ImportError:
+                print("[train] Distillation trainer module not yet available.")
                 trainer_init_error = "trainer module not available"
         elif config.trainer_type in ("rl", "grpo"):
             try:

@@ -1,0 +1,93 @@
+{
+  "id": "recipe-trajectory-distill-001",
+  "name": "Trajectory Distillation for Coding Agents",
+  "version": "1.0",
+  "source_papers": [
+    "2505.17612",
+    "2505.24850"
+  ],
+  "model": {
+    "base": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "adapter": "lora"
+  },
+  "dataset": {
+    "sources": [
+      {
+        "name": "teacher-agent-trajectories",
+        "path": "data/distill/teacher_trajectories.jsonl",
+        "mix_weight": 1.0
+      }
+    ],
+    "filters": [
+      {
+        "type": "quality_score",
+        "params": {
+          "min_score": 0.7
+        }
+      }
+    ]
+  },
+  "trainer": {
+    "type": "distill",
+    "backend": "trl",
+    "params": {
+      "lr": 2e-5,
+      "epochs": 2,
+      "batch_size": 2,
+      "pairwise_epochs": 1,
+      "pairwise_lr": 5e-6
+    }
+  },
+  "distill": {
+    "strategy": "trajectory",
+    "teacher_model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "teacher_mode": "offline_dataset",
+    "stages": [
+      "positive_sft",
+      "pairwise_refine"
+    ],
+    "refine_algorithm": "dpo",
+    "pairwise_beta": 0.1,
+    "trace_template": "chatml",
+    "condense": {
+      "strategy": "edge_preserving",
+      "max_chars": 12000,
+      "head_chars": 5000,
+      "tail_chars": 5000
+    }
+  },
+  "eval": {
+    "benchmarks": [
+      "swe-bench-lite",
+      "humaneval"
+    ],
+    "metrics": [
+      "resolve_rate",
+      "pass@1"
+    ],
+    "seeds": [
+      42,
+      123,
+      456
+    ]
+  },
+  "ablation": [
+    {
+      "name": "distill_stage",
+      "variable": "distill.stages",
+      "values": [
+        [
+          "positive_sft"
+        ],
+        [
+          "positive_sft",
+          "pairwise_refine"
+        ]
+      ]
+    }
+  ],
+  "budget": {
+    "max_gpu_hours": 24,
+    "gpu_type": "A100-80GB"
+  }
+}

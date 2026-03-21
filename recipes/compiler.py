@@ -26,6 +26,7 @@ class TrainingConfig:
     model_config: dict[str, Any]
     data_config: dict[str, Any]
     training_params: dict[str, Any]
+    distill_config: dict[str, Any]
     eval_config: dict[str, Any]
     ablation_configs: list[dict[str, Any]]
     budget: dict[str, Any]
@@ -89,12 +90,13 @@ def compile_recipe(recipe: dict) -> TrainingConfig:
     eval_section = recipe.get("eval", {})
     budget = recipe.get("budget", {})
     ablation = recipe.get("ablation", [])
+    distill = recipe.get("distill", {})
 
     # Determine backend: use explicit value, or default based on trainer type
     if "backend" in trainer:
         backend = trainer["backend"]
     else:
-        backend = "trl" if trainer["type"] == "sft" else "verl"
+        backend = "trl" if trainer["type"] in {"sft", "dpo", "distill"} else "verl"
 
     return TrainingConfig(
         recipe_id=recipe["id"],
@@ -114,6 +116,7 @@ def compile_recipe(recipe: dict) -> TrainingConfig:
             **trainer.get("params", {}),
             **({"reward": trainer["reward"]} if "reward" in trainer else {}),
         },
+        distill_config=distill,
         eval_config={
             "benchmarks": eval_section.get("benchmarks", []),
             "metrics": eval_section.get("metrics", []),

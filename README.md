@@ -49,12 +49,13 @@
 # Install
 git clone https://github.com/chenghaoYang/auto-coder-trainer.git
 cd auto-coder-trainer
-python3 -m pip install -e ".[dev,tinyzero]"
+python3 -m pip install -e ".[all,dev]"
 
 # Five entry points
 act collect "coding agent training"               # Online discovery (arXiv + GitHub) → registry
 act compose --atoms swe-fuse,entropy-rl           # Compose → schema-clean recipe
 act train recipes/examples/baseline-sft.recipe.json  # Native train or TinyZero launch bundle
+act train recipes/examples/trajectory-distill.recipe.json  # Teacher-trajectory distillation
 act report --recipe-id recipe-baseline-sft-001    # Report → comparison / verdicts / ablations (also: --experiment-id)
 act status --open-only                            # Recovery view: experiments, artifacts, pending tasks
 ```
@@ -80,7 +81,7 @@ claude
 > /report exp_001
 ```
 
-`collect` supports both offline import mode (`method_atoms.json` / JSONL / inline JSON) and automated discovery mode via arXiv + GitHub search. `train` supports two execution styles: native SFT/RL backends when the local Python stack is available, and `backend=tinyzero` for generating ready-to-edit launch bundles (`env.sh`, `hydra-overrides.txt`, `run.sh`) for external baseline runs. Every `train` invocation now persists experiment state, evaluation rows, artifacts, and a task ledger so the next agent can resume from the current checkpoint instead of re-auditing the repo.
+`collect` supports both offline import mode (`method_atoms.json` / JSONL / inline JSON) and automated discovery mode via arXiv + GitHub search. `train` now supports three native post-training tracks: SFT, RL/GRPO, and trajectory distillation. Distillation is designed for coding-agent teacher traces: it runs positive teacher-trajectory SFT first, then can optionally refine with TRL DPO on chosen-vs-rejected traces. For stronger upstream alignment, the same control plane can also generate launch bundles for `openr1`, `agent_distill`, and `redi`. Every `train` invocation persists experiment state, evaluation rows, artifacts, and a task ledger so the next agent can resume from the current checkpoint instead of re-auditing the repo.
 
 ## Recovery And State
 
@@ -123,6 +124,23 @@ Every experiment is defined by a **Recipe IR** — a structured JSON file that c
 ```
 
 See [`recipes/schema/recipe.schema.json`](recipes/schema/recipe.schema.json) for the full schema and [`recipes/examples/`](recipes/examples/) for example recipes.
+
+Distillation recipes add an optional `distill` block:
+
+```jsonc
+{
+  "trainer": { "type": "distill", "backend": "trl" },
+  "distill": {
+    "strategy": "trajectory",
+    "teacher_model": "Qwen/Qwen2.5-Coder-32B-Instruct",
+    "teacher_mode": "offline_dataset",
+    "stages": ["positive_sft", "pairwise_refine"],
+    "refine_algorithm": "dpo",
+    "pairwise_beta": 0.1,
+    "condense": { "strategy": "edge_preserving", "max_chars": 12000 }
+  }
+}
+```
 
 ## Experiment Judge
 
@@ -240,7 +258,21 @@ if not monitor.is_healthy():
 |---------|----------|-----------|
 | **TinyZero** | Baseline SFT / RL launch bundles | [Jiayi-Pan/TinyZero](https://github.com/Jiayi-Pan/TinyZero) |
 | **veRL** | RL / GRPO / PPO | [volcengine/verl](https://github.com/volcengine/verl) |
-| **TRL** | SFT / DPO | [huggingface/trl](https://github.com/huggingface/trl) |
+| **TRL** | SFT / native trajectory distillation / DPO refinement | [huggingface/trl](https://github.com/huggingface/trl) |
+| **Open-R1** | External reasoning / distillation recipe launcher | [huggingface/open-r1](https://github.com/huggingface/open-r1) |
+| **Agent Distillation** | External teacher-agent trajectory distillation launcher | [Nardien/agent-distillation](https://github.com/Nardien/agent-distillation) |
+| **REDI** | External negative-signal refinement launcher | [Tim-Siu/reinforcement-distillation](https://github.com/Tim-Siu/reinforcement-distillation) |
+
+## Distillation Track
+
+The project supports a coding-agent-friendly distillation path rather than a narrow logits-only KD setup:
+
+- **Positive trajectory distillation**: train the student on teacher-generated agent traces or high-quality coding completions.
+- **Optional native pairwise refinement**: when the dataset includes `chosen`/`rejected` traces, run a second-stage TRL DPO refinement to push the student toward better trajectories and away from bad ones.
+- **Optional upstream refinement / training stacks**: switch to `backend=redi`, `backend=agent_distill`, or `backend=openr1` when you want to stay closer to the official SOTA implementation than to the native adapter path.
+- **Trajectory condensation**: long agent traces can be edge-preserving condensed before training so we keep the beginning/end of the reasoning path without exploding token cost.
+
+This choice is intentional: for coding agents, teacher trajectories and tool-using traces are usually easier to obtain and more reusable than full teacher logits, and recent open work has shown strong results from this regime. See [UPSTREAM_INTEGRATION.md](UPSTREAM_INTEGRATION.md) for the upstream-first policy.
 
 ### TinyZero Migration
 
@@ -265,9 +297,11 @@ This project is under active development. Current status:
 - [x] Report generation with verdict / ablation / multi-experiment comparison
 - [x] TinyZero baseline launcher for SFT / RL recipes
 - [x] SFT trainer implementation (TRL / Transformers fallback, dependency-gated)
+- [x] Distillation trainer implementation (trajectory SFT + optional TRL DPO refinement)
 - [x] RL trainer implementation (veRL)
 - [x] SWE-bench evaluator integration
 - [x] Persistent experiment recovery (`eval_runs`, tasks, artifacts, task ledgers)
+- [x] Upstream launcher adapters for Open-R1 / Agent Distillation / REDI
 - [ ] Case studies and reproductions
 
 ## License

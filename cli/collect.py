@@ -27,6 +27,8 @@ def _infer_category(text: str) -> str:
     lowered = text.lower()
     if any(token in lowered for token in ("reward", "entropy", "advantage", "grpo", "ppo", "rlhf")):
         return "reward"
+    if any(token in lowered for token in ("distill", "distillation", "teacher", "student")):
+        return "training"
     if any(token in lowered for token in ("benchmark", "evaluation", "judge", "pass@k", "swe-bench", "humaneval", "mbpp")):
         return "eval"
     if any(token in lowered for token in ("dataset", "trajectory", "corpus", "data mixture", "distillation data")):
@@ -39,6 +41,17 @@ def _infer_category(text: str) -> str:
 def _infer_trainer(text: str) -> dict[str, Any]:
     lowered = text.lower()
     trainer: dict[str, Any] = {"params": {}}
+    if any(token in lowered for token in ("distill", "distillation", "teacher model", "student model", "trajectory distillation")):
+        trainer["type"] = "distill"
+        if "open-r1" in lowered or "openr1" in lowered:
+            trainer["backend"] = "openr1"
+        elif "agent distillation" in lowered:
+            trainer["backend"] = "agent_distill"
+        elif "redi" in lowered or "reinforcement distillation" in lowered:
+            trainer["backend"] = "redi"
+        else:
+            trainer["backend"] = "trl"
+        return trainer
     if any(token in lowered for token in ("grpo", "ppo", "reinforcement", "rlhf")):
         trainer["type"] = "grpo" if "grpo" in lowered else "rl"
         trainer["backend"] = "verl"

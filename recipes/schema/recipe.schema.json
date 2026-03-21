@@ -55,14 +55,41 @@
       "type": "object",
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["sft", "rl", "dpo", "grpo"] },
-        "backend": { "enum": ["trl", "verl", "tinyzero"], "default": "verl", "description": "Native backends: RL -> veRL, SFT -> TRL. Use tinyzero for veRL-compatible baseline launch bundles." },
+        "type": { "enum": ["sft", "rl", "dpo", "grpo", "distill"] },
+        "backend": { "enum": ["trl", "verl", "tinyzero", "openr1", "agent_distill", "redi"], "default": "verl", "description": "Native backends: RL -> veRL, SFT/distill -> TRL. External upstream launchers: tinyzero, openr1, agent_distill, redi." },
         "params": { "type": "object", "description": "Training hyperparameters (lr, epochs, batch_size, ppo_epochs, rollout_batch_size, etc.)" },
         "reward": {
           "type": "object",
           "properties": {
             "type": { "enum": ["binary_pass", "weighted_pass", "entropy_bonus", "entropy_aware", "length_penalty", "composite"] },
             "components": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
+    "distill": {
+      "type": "object",
+      "description": "Optional distillation configuration for teacher-trajectory or process distillation.",
+      "properties": {
+        "strategy": { "enum": ["trajectory", "process", "hybrid"], "default": "trajectory" },
+        "teacher_model": { "type": "string", "description": "Teacher model identifier or descriptive label" },
+        "teacher_mode": { "enum": ["offline_dataset", "local_model", "api"], "default": "offline_dataset" },
+        "stages": {
+          "type": "array",
+          "items": { "enum": ["positive_sft", "pairwise_refine"] },
+          "default": ["positive_sft"]
+        },
+        "refine_algorithm": { "enum": ["none", "dpo", "redi"], "default": "dpo" },
+        "pairwise_beta": { "type": "number", "default": 0.1 },
+        "trace_template": { "type": "string", "default": "chatml" },
+        "upstream_repo": { "type": "string", "description": "Optional upstream repo URL override for external launcher backends" },
+        "condense": {
+          "type": "object",
+          "properties": {
+            "strategy": { "enum": ["none", "edge_preserving"], "default": "edge_preserving" },
+            "max_chars": { "type": "integer", "default": 12000 },
+            "head_chars": { "type": "integer", "default": 5000 },
+            "tail_chars": { "type": "integer", "default": 5000 }
           }
         }
       }
