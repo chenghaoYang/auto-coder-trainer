@@ -67,7 +67,15 @@ class RLTrainer(BaseTrainer):
         logger.info("Reward function: %s", type(self._reward_fn).__name__)
 
         # 3. Set up rollout environment
-        env_cfg = training_params.get("rollout_env", {"type": "local", "timeout": 60})
+        env_cfg = training_params.get(
+            "rollout_env",
+            {
+                "type": "docker",
+                "timeout": 60,
+                "memory_limit": "4g",
+                "network": False,
+            },
+        )
         self._rollout_env = setup_rollout_env(env_cfg)
         logger.info("Rollout environment ready: %s", self._rollout_env.get("env_type"))
 

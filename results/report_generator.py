@@ -27,11 +27,24 @@ class ReportGenerator:
 
         exp = self.result_db.get_experiment(experiment_id)
         if exp is None:
-            return {"experiment": None, "ablations": [], "verdicts": []}
+            return {
+                "experiment": None,
+                "eval_runs": [],
+                "ablations": [],
+                "verdicts": [],
+                "tasks": [],
+                "artifacts": [],
+            }
 
         conn = self.result_db._conn
+        eval_runs = []
         ablations = []
         if conn is not None:
+            cur = conn.execute(
+                "SELECT * FROM eval_runs WHERE experiment_id = ? ORDER BY benchmark, seed, id",
+                (experiment_id,),
+            )
+            eval_runs = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
             cur = conn.execute(
                 "SELECT * FROM ablations WHERE experiment_id = ? ORDER BY timestamp",
                 (experiment_id,),
@@ -46,7 +59,28 @@ class ReportGenerator:
             )
             verdicts = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
 
-        return {"experiment": exp, "ablations": ablations, "verdicts": verdicts}
+        tasks = []
+        artifacts = []
+        if conn is not None:
+            cur = conn.execute(
+                "SELECT * FROM tasks WHERE experiment_id = ? ORDER BY updated_at DESC, id DESC",
+                (experiment_id,),
+            )
+            tasks = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
+            cur = conn.execute(
+                "SELECT * FROM artifacts WHERE experiment_id = ? ORDER BY timestamp, id",
+                (experiment_id,),
+            )
+            artifacts = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
+
+        return {
+            "experiment": exp,
+            "eval_runs": eval_runs,
+            "ablations": ablations,
+            "verdicts": verdicts,
+            "tasks": tasks,
+            "artifacts": artifacts,
+        }
 
     def _collect_results_rows(
         self, data: dict[str, Any]
@@ -60,10 +94,31 @@ class ReportGenerator:
         if exp is None:
             return rows
 
+        eval_runs = data.get("eval_runs", [])
+        if eval_runs:
+            for eval_run in eval_runs:
+                metrics = eval_run.get("metrics_json", {})
+                if isinstance(metrics, str):
+                    try:
+                        metrics = json.loads(metrics)
+                    except json.JSONDecodeError:
+                        metrics = {}
+                if not isinstance(metrics, dict):
+                    continue
+                for metric_name, value in sorted(metrics.items()):
+                    rows.append(
+                        {
+                            "benchmark": eval_run.get("benchmark", "main"),
+                            "metric": metric_name,
+                            "value": value,
+                            "seed": eval_run.get("seed", "-"),
+                        }
+                    )
+            return rows
+
         # Main experiment metrics
         metrics = exp.get("metrics_json")
         if isinstance(metrics, str):
-            import json
             metrics = json.loads(metrics)
         if isinstance(metrics, dict):
             for metric_name, value in sorted(metrics.items()):
@@ -76,6 +131,21 @@ class ReportGenerator:
                     }
                 )
 
+        return rows
+
+    def _collect_task_rows(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return tracked tasks for display."""
+        rows: list[dict[str, Any]] = []
+        for task in data.get("tasks", []):
+            rows.append(
+                {
+                    "id": task.get("id", "?"),
+                    "status": task.get("status", "?"),
+                    "priority": task.get("priority", "?"),
+                    "kind": task.get("kind", "?"),
+                    "title": task.get("title", "?"),
+                }
+            )
         return rows
 
     def _collect_ablation_rows(self, data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -245,6 +315,17 @@ class ReportGenerator:
                     parts.append(
                         f"| {row['verdict']} | {row['reasoning']} | {row['checks']} | "
                         f"{row['suggestions']} | {row['timestamp']} |"
+                        )
+                parts.append("")
+
+            task_rows = self._collect_task_rows(data)
+            if task_rows:
+                parts.append("## Tasks\n")
+                parts.append("| ID | Status | Priority | Kind | Title |")
+                parts.append("| --- | --- | --- | --- | --- |")
+                for row in task_rows:
+                    parts.append(
+                        f"| {row['id']} | {row['status']} | {row['priority']} | {row['kind']} | {row['title']} |"
                     )
                 parts.append("")
 
@@ -420,6 +501,25 @@ class ReportGenerator:
                 parts.append(r"\end{tabular}")
                 parts.append("")
 
+            task_rows = self._collect_task_rows(data)
+            if task_rows:
+                parts.append(r"\subsection{Tasks}")
+                parts.append(r"\begin{tabular}{lllll}")
+                parts.append(r"\toprule")
+                parts.append(r"ID & Status & Priority & Kind & Title \\")
+                parts.append(r"\midrule")
+                for row in task_rows:
+                    parts.append(
+                        rf"{_latex_escape(str(row['id']))} & "
+                        rf"{_latex_escape(str(row['status']))} & "
+                        rf"{_latex_escape(str(row['priority']))} & "
+                        rf"{_latex_escape(str(row['kind']))} & "
+                        rf"{_latex_escape(str(row['title']))} \\"
+                    )
+                parts.append(r"\bottomrule")
+                parts.append(r"\end{tabular}")
+                parts.append("")
+
             # Analysis
             analysis = self._analyze_metrics(rows)
             parts.append(r"\subsection{Analysis}")
@@ -472,8 +572,6 @@ class ReportGenerator:
         Produces a Markdown table with experiment ID, recipe, and key
         metrics side by side, with the best value per metric bolded.
         """
-        import json as _json
-
         # Gather experiments for each identifier. Accept either experiment IDs
         # or recipe IDs so callers do not need to pre-normalize the input.
         experiments: list[dict[str, Any]] = []
@@ -493,7 +591,7 @@ class ReportGenerator:
         for exp in experiments:
             m = exp.get("metrics_json")
             if isinstance(m, str):
-                m = _json.loads(m)
+                m = json.loads(m)
             if isinstance(m, dict):
                 all_metrics.update(m.keys())
         metric_names = sorted(all_metrics)
@@ -511,7 +609,7 @@ class ReportGenerator:
         for exp in experiments:
             m = exp.get("metrics_json")
             if isinstance(m, str):
-                m = _json.loads(m)
+                m = json.loads(m)
             if isinstance(m, dict):
                 for k, v in m.items():
                     if isinstance(v, (int, float)):
@@ -523,7 +621,7 @@ class ReportGenerator:
         for exp in experiments:
             m = exp.get("metrics_json")
             if isinstance(m, str):
-                m = _json.loads(m)
+                m = json.loads(m)
             if not isinstance(m, dict):
                 m = {}
 

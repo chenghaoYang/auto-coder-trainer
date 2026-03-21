@@ -1,9 +1,9 @@
-.PHONY: collect compose train report install dev test clean help validate-schema
+.PHONY: collect compose train report status install dev test clean help validate-schema
 
 PYTHON ?= python3
 
 # Auto-Coder-Trainer — Research Operating System for Coding Agent Training
-# Four entry points: collect → compose → train → report
+# Five entry points: collect → compose → train → report → status
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -14,7 +14,7 @@ install: ## Install base package
 dev: ## Install with all dev dependencies
 	$(PYTHON) -m pip install -e ".[all,dev]"
 
-collect: ## Import method atoms or run collect stub (usage: make collect QUERY=path/to/method_atoms.json)
+collect: ## Collect from arXiv/GitHub or import atoms (usage: make collect QUERY="coding agent training")
 	$(PYTHON) -m cli.main collect "$(QUERY)"
 
 compose: ## Compose recipe from method atoms (usage: make compose ATOMS="swe-fuse,entropy-rl")
@@ -25,6 +25,9 @@ train: ## Run training experiment (usage: make train RECIPE=recipes/examples/bas
 
 report: ## Generate experiment report (usage: make report EXP_ID=exp_001)
 	$(PYTHON) -m cli.main report --experiment-id "$(EXP_ID)"
+
+status: ## Show tracked experiments and open tasks (usage: make status RECIPE_ID=recipe-demo)
+	$(PYTHON) -m cli.main status $(if $(RECIPE_ID),--recipe-id "$(RECIPE_ID)",)
 
 test: ## Run tests
 	$(PYTHON) -m pytest tests/ -v

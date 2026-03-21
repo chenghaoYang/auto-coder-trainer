@@ -51,21 +51,23 @@ git clone https://github.com/chenghaoYang/auto-coder-trainer.git
 cd auto-coder-trainer
 python3 -m pip install -e ".[dev,tinyzero]"
 
-# Four entry points
-act collect recipes/registry/method_atoms.json    # Import method atoms → registry
+# Five entry points
+act collect "coding agent training"               # Online discovery (arXiv + GitHub) → registry
 act compose --atoms swe-fuse,entropy-rl           # Compose → schema-clean recipe
-act train recipes/examples/baseline-sft.recipe.json  # Validate/plan → TinyZero launch bundle or native run
+act train recipes/examples/baseline-sft.recipe.json  # Native train or TinyZero launch bundle
 act report --recipe-id recipe-baseline-sft-001    # Report → comparison / verdicts / ablations (also: --experiment-id)
+act status --open-only                            # Recovery view: experiments, artifacts, pending tasks
 ```
 
 Or use `make`:
 
 ```bash
 make dev
-make collect QUERY=path/to/method_atoms.json
+make collect QUERY="coding agent training"
 make compose ATOMS="swe-fuse,entropy-rl"
 make train RECIPE=recipes/examples/baseline-sft.recipe.json
 make report EXP_ID=exp_001
+make status RECIPE_ID=recipe-baseline-sft-001
 ```
 
 Or use Claude Code skills:
@@ -78,7 +80,23 @@ claude
 > /report exp_001
 ```
 
-`collect` is currently most useful in offline import mode (local `method_atoms.json` / JSONL / inline JSON). Automated paper discovery still depends on ARIS research skills. `train` now supports two modes: native backends still validate and plan, while `backend=tinyzero` compiles a ready-to-edit launch bundle (`env.sh`, `hydra-overrides.txt`, `run.sh`) for external baseline runs.
+`collect` supports both offline import mode (`method_atoms.json` / JSONL / inline JSON) and automated discovery mode via arXiv + GitHub search. `train` supports two execution styles: native SFT/RL backends when the local Python stack is available, and `backend=tinyzero` for generating ready-to-edit launch bundles (`env.sh`, `hydra-overrides.txt`, `run.sh`) for external baseline runs. Every `train` invocation now persists experiment state, evaluation rows, artifacts, and a task ledger so the next agent can resume from the current checkpoint instead of re-auditing the repo.
+
+## Recovery And State
+
+The project now keeps resumable state in two places:
+
+- `data/results.db`: experiments, eval runs, verdicts, artifacts, and tracked tasks
+- `outputs/<recipe-id>/task-ledger.{json,md}`: a human/agent-readable snapshot of what finished and what is still open for that recipe
+
+Useful commands:
+
+```bash
+act status --open-only
+act status --recipe-id recipe-baseline-sft-001 --output outputs/status.md
+```
+
+If you want a separate DB while testing, set `ACT_RESULTS_DB=/path/to/results.db`.
 
 ## Recipe IR
 
@@ -147,8 +165,9 @@ auto-coder-trainer/
 │   ├── baseline.py       #   Baseline alignment
 │   ├── ablation.py       #   Ablation validation
 │   └── attribution.py    #   Failure analysis
-├── results/              # Result database
+├── results/              # Result database + ledgers
 │   ├── db.py             #   SQLite-backed storage
+│   ├── ledger.py         #   Task ledger writer for recovery
 │   └── report_generator.py  # Auto report generation
 ├── prompt_cache/          # Prompt caching infrastructure
 │   ├── builder.py        #   Cache-safe prompt construction
@@ -241,13 +260,14 @@ This project is under active development. Current status:
 - [x] Recipe IR JSON Schema
 - [x] Project skeleton (trainers, evaluators, judge, results, CLI)
 - [x] Prompt cache infrastructure (builder, monitor, compaction, rules)
-- [x] CLI automation shell (`collect` import, `compose`, `train` execution plan / TinyZero bundle, `report`)
+- [x] CLI automation shell (`collect`, `compose`, `train`, `report`, `status`)
 - [x] Experiment judge logic and result DB helpers
 - [x] Report generation with verdict / ablation / multi-experiment comparison
 - [x] TinyZero baseline launcher for SFT / RL recipes
-- [ ] SFT trainer implementation (TRL)
+- [x] SFT trainer implementation (TRL / Transformers fallback, dependency-gated)
 - [x] RL trainer implementation (veRL)
 - [x] SWE-bench evaluator integration
+- [x] Persistent experiment recovery (`eval_runs`, tasks, artifacts, task ledgers)
 - [ ] Case studies and reproductions
 
 ## License

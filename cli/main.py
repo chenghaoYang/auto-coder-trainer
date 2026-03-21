@@ -22,6 +22,7 @@ def main():
     collect_parser = subparsers.add_parser("collect", help="Collect papers, projects, and methods")
     collect_parser.add_argument("query", type=str, help="Research query or topic")
     collect_parser.add_argument("--max-papers", type=int, default=20, help="Maximum papers to collect")
+    collect_parser.add_argument("--max-repos", type=int, default=10, help="Maximum GitHub repos to collect")
     collect_parser.add_argument("--output", type=str, default="recipes/registry/", help="Output directory")
 
     # compose
@@ -43,6 +44,12 @@ def main():
     report_parser.add_argument("--format", choices=["markdown", "latex"], default="markdown")
     report_parser.add_argument("--output", type=str, default="reports/", help="Output directory")
 
+    # status
+    status_parser = subparsers.add_parser("status", help="Summarize tracked experiments and open tasks")
+    status_parser.add_argument("--recipe-id", type=str, help="Limit the summary to a recipe")
+    status_parser.add_argument("--open-only", action="store_true", help="Show only open tasks")
+    status_parser.add_argument("--output", type=str, help="Optional path to save the status report")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -62,6 +69,9 @@ def main():
     elif args.command == "report":
         from cli.report import run_report
         run_report(args)
+    elif args.command == "status":
+        from cli.status import run_status
+        run_status(args)
 
 
 if __name__ == "__main__":

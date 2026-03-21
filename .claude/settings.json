@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"getattr\\(args\" /Users/yangchenghao/Desktop/auto-coder-trainer/cli/*.py)",
+      "Bash(grep -r \"evaluators.runner\\\\|from evaluators.runner\\\\|import.*runner\" /Users/yangchenghao/Desktop/auto-coder-trainer --include=*.py)",
+      "Bash(grep -n \"unused\\\\|TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" /Users/yangchenghao/Desktop/auto-coder-trainer/cli/*.py)",
+      "Bash(grep -n \"from evaluators\\\\|import evaluators\" /Users/yangchenghao/Desktop/auto-coder-trainer/trainers/*.py /Users/yangchenghao/Desktop/auto-coder-trainer/trainers/*/*.py)",
+      "Bash(python -m pytest tests/ -v)"
+    ]
+  }
+}

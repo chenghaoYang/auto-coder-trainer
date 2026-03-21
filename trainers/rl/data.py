@@ -8,11 +8,11 @@ Provides helpers to:
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
-from pathlib import Path
 from typing import Any
+
+from trainers.utils.data_loading import load_from_path as _shared_load_from_path
 
 logger = logging.getLogger(__name__)
 
@@ -76,39 +76,7 @@ def load_rl_prompts(
 
 def _load_from_path(path: str) -> list[dict[str, Any]]:
     """Load raw examples from a HuggingFace dataset or local file."""
-    local = Path(path)
-
-    # Local JSONL file
-    if local.exists() and local.suffix in (".jsonl", ".json"):
-        return _load_local(local)
-
-    # Try HuggingFace datasets
-    try:
-        from datasets import load_dataset  # type: ignore[import-untyped]
-
-        ds = load_dataset(path, split="train")
-        return [dict(row) for row in ds]
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not load dataset from '{path}'. "
-            f"Ensure the path is a valid HuggingFace dataset ID or a local JSONL file. "
-            f"Original error: {exc}"
-        ) from exc
-
-
-def _load_local(path: Path) -> list[dict[str, Any]]:
-    """Load examples from a local JSON/JSONL file."""
-    data: list[dict[str, Any]] = []
-    with open(path) as f:
-        if path.suffix == ".jsonl":
-            for line in f:
-                line = line.strip()
-                if line:
-                    data.append(json.loads(line))
-        else:
-            content = json.load(f)
-            data = content if isinstance(content, list) else [content]
-    return data
+    return _shared_load_from_path(path)
 
 
 def _normalise_prompt(example: dict[str, Any], source_name: str = "") -> dict[str, Any]:
@@ -141,6 +109,8 @@ def _normalise_prompt(example: dict[str, Any], source_name: str = "") -> dict[st
             "source": source_name,
             "instance_id": example.get("instance_id", example.get("id", "")),
             "repo": example.get("repo", ""),
+            "quality_score": example.get("quality_score", example.get("score", 1.0)),
+            "turns": example.get("turns", 0),
             "original_fields": list(example.keys()),
         },
     }
@@ -243,7 +213,7 @@ def setup_rollout_env(env_config: dict[str, Any]) -> dict[str, Any]:
             - execute_fn (callable): function(code: str) -> dict with
               ``stdout``, ``stderr``, ``exit_code``, ``tests_passed``, ``tests_total``
     """
-    env_type = env_config.get("type", "local")
+    env_type = env_config.get("type", "docker")
     timeout = env_config.get("timeout", 60)
 
     if env_type == "docker":
@@ -302,14 +272,29 @@ def _setup_docker_env(env_config: dict[str, Any], timeout: int) -> dict[str, Any
     image = env_config.get("image", "python:3.11-slim")
     memory_limit = env_config.get("memory_limit", "4g")
     network_disabled = not env_config.get("network", False)
+    allow_local_fallback = bool(env_config.get("allow_local_fallback", False))
 
     try:
         import subprocess
         # Verify Docker is available
         subprocess.run(["docker", "info"], capture_output=True, check=True, timeout=10)
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Docker not available, falling back to local env: %s", exc)
-        return _setup_local_env(env_config, timeout)
+        if allow_local_fallback:
+            logger.warning("Docker not available, falling back to local env: %s", exc)
+            return _setup_local_env(env_config, timeout)
+        logger.warning("Docker not available and local fallback disabled: %s", exc)
+        return {
+            "env_type": "docker",
+            "ready": False,
+            "error": f"Docker not available: {exc}",
+            "execute_fn": lambda *_args, **_kwargs: {
+                "stdout": "",
+                "stderr": f"Docker not available: {exc}",
+                "exit_code": -1,
+                "tests_passed": 0,
+                "tests_total": 0,
+            },
+        }
 
     def execute_fn(code: str, test_code: str = "") -> dict[str, Any]:
         import subprocess as sp

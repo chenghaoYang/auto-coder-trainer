@@ -145,6 +145,16 @@ def _generate_basic_report(
                 if isinstance(abl_metrics, dict):
                     for k, v in abl_metrics.items():
                         lines.append(f"  {k}: {v} \\\\")
+            tasks = exp.get("tasks", []) if isinstance(exp, dict) else []
+            for task in tasks:
+                lines.append(
+                    f"Task: [{task.get('status', '?')}] {task.get('kind', '?')} - {task.get('title', '?')} \\\\"
+                )
+            artifacts = exp.get("artifacts", []) if isinstance(exp, dict) else []
+            for artifact in artifacts:
+                lines.append(
+                    f"Artifact: {artifact.get('kind', '?')} -> {artifact.get('path', '?')} \\\\"
+                )
         lines.append("\\end{document}")
         ext = ".tex"
     else:
@@ -177,6 +187,20 @@ def _generate_basic_report(
                         metric_text = " | " + ", ".join(f"{k}: {v}" for k, v in metric_parts.items())
                     lines.append(
                         f"  - {abl.get('variable', '?')}={abl.get('value', '?')}{metric_text}"
+                    )
+            tasks = exp.get("tasks", []) if isinstance(exp, dict) else []
+            if tasks:
+                lines.append("- **Tasks**:")
+                for task in tasks:
+                    lines.append(
+                        f"  - [{task.get('status', '?')}] {task.get('kind', '?')}: {task.get('title', '?')}"
+                    )
+            artifacts = exp.get("artifacts", []) if isinstance(exp, dict) else []
+            if artifacts:
+                lines.append("- **Artifacts**:")
+                for artifact in artifacts:
+                    lines.append(
+                        f"  - {artifact.get('kind', '?')}: {artifact.get('path', '?')}"
                     )
             lines.append("")
         ext = ".md"
