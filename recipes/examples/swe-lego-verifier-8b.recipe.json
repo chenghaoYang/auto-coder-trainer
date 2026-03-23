@@ -1,0 +1,56 @@
+{
+  "id": "swe-lego-verifier-qwen3-8b",
+  "name": "SWE-Lego Verifier Qwen3-8B (1xH200)",
+  "source_papers": ["2507.02391"],
+  "model": {
+    "base": "Qwen/Qwen3-8B",
+    "size": "8B",
+    "adapter": "full"
+  },
+  "dataset": {
+    "sources": [
+      { "name": "swe-lego-verifier", "path": "SWE-Lego/SWE_Lego_real_data_Verifier", "mix_weight": 1.0 }
+    ]
+  },
+  "trainer": {
+    "type": "sft",
+    "backend": "swe_lego",
+    "params": {
+      "lr": 2e-5,
+      "epochs": 5,
+      "batch_size": 1,
+      "gradient_accumulation_steps": 8,
+      "max_length": 131072,
+      "warmup_ratio": 0.1,
+      "lr_scheduler": "cosine",
+      "weight_decay": 0.01,
+      "max_grad_norm": 1.0,
+      "turn_mask": false,
+      "rope_scaling": "yarn",
+      "flash_attn": "fa2",
+      "liger_kernel": true,
+      "template": "qwen3_nothink",
+      "deepspeed": "z2_offload",
+      "gradient_checkpointing": true,
+      "preprocessing_num_workers": 16,
+      "dataloader_num_workers": 4,
+      "verifier_mode": true
+    }
+  },
+  "eval": {
+    "benchmarks": ["swe-bench-verified"],
+    "seeds": [42]
+  },
+  "budget": {
+    "max_gpu_hours": 60,
+    "gpu_type": "1xH200-141GB",
+    "slurm": {
+      "partition": "gpu",
+      "nodes": 1,
+      "gpus_per_node": 1,
+      "cpus_per_task": 16,
+      "mem": "256G",
+      "time": "48:00:00"
+    }
+  }
+}
