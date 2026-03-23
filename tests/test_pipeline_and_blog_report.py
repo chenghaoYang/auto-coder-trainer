@@ -395,6 +395,10 @@ class TestPipeline:
                 )
 
         monkeypatch.setattr(trainers.sft, "SFTTrainer", FakeSFTTrainer)
+        # Also patch the registry so get_trainer_class() returns the fake
+        import trainers.registry
+        monkeypatch.setitem(trainers.registry._REGISTRY, ("sft", None), FakeSFTTrainer)
+        monkeypatch.setitem(trainers.registry._REGISTRY, ("sft", "trl"), FakeSFTTrainer)
 
         from cli.pipeline import run_pipeline
 

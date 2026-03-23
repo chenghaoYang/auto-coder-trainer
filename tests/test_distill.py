@@ -178,6 +178,10 @@ def test_train_dispatches_distill_trainer_and_persists_results(tmp_path: Path, m
             )
 
     monkeypatch.setattr(trainers.distill, "DistillTrainer", FakeDistillTrainer)
+    # Also patch the registry so get_trainer_class() returns the fake
+    import trainers.registry
+    monkeypatch.setitem(trainers.registry._REGISTRY, ("distill", None), FakeDistillTrainer)
+    monkeypatch.setitem(trainers.registry._REGISTRY, ("distill", "trl"), FakeDistillTrainer)
 
     output_dir = tmp_path / "outputs"
     run_train(Namespace(recipe=str(recipe_path), output_dir=str(output_dir), dry_run=False))

@@ -226,6 +226,10 @@ def test_train_persists_successful_run_eval_results_and_tasks(tmp_path: Path, mo
             )
 
     monkeypatch.setattr(trainers.sft, "SFTTrainer", FakeSFTTrainer)
+    # Also patch the registry so get_trainer_class() returns the fake
+    import trainers.registry
+    monkeypatch.setitem(trainers.registry._REGISTRY, ("sft", None), FakeSFTTrainer)
+    monkeypatch.setitem(trainers.registry._REGISTRY, ("sft", "trl"), FakeSFTTrainer)
 
     output_dir = tmp_path / "outputs"
     run_train(
