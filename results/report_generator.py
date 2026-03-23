@@ -38,50 +38,13 @@ class ReportGenerator:
                 "artifacts": [],
             }
 
-        conn = self.result_db._conn
-        eval_runs = []
-        ablations = []
-        if conn is not None:
-            cur = conn.execute(
-                "SELECT * FROM eval_runs WHERE experiment_id = ? ORDER BY benchmark, seed, id",
-                (experiment_id,),
-            )
-            eval_runs = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
-            cur = conn.execute(
-                "SELECT * FROM ablations WHERE experiment_id = ? ORDER BY timestamp",
-                (experiment_id,),
-            )
-            ablations = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
-
-        verdicts = []
-        if conn is not None:
-            cur = conn.execute(
-                "SELECT * FROM verdicts WHERE experiment_id = ? ORDER BY timestamp",
-                (experiment_id,),
-            )
-            verdicts = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
-
-        tasks = []
-        artifacts = []
-        if conn is not None:
-            cur = conn.execute(
-                "SELECT * FROM tasks WHERE experiment_id = ? ORDER BY updated_at DESC, id DESC",
-                (experiment_id,),
-            )
-            tasks = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
-            cur = conn.execute(
-                "SELECT * FROM artifacts WHERE experiment_id = ? ORDER BY timestamp, id",
-                (experiment_id,),
-            )
-            artifacts = [self.result_db._row_to_dict(r) for r in cur.fetchall()]
-
         return {
             "experiment": exp,
-            "eval_runs": eval_runs,
-            "ablations": ablations,
-            "verdicts": verdicts,
-            "tasks": tasks,
-            "artifacts": artifacts,
+            "eval_runs": self.result_db.get_eval_runs_for_experiment(experiment_id),
+            "ablations": self.result_db.get_ablations_for_experiment(experiment_id),
+            "verdicts": self.result_db.get_verdicts_for_experiment(experiment_id),
+            "tasks": self.result_db.get_tasks(experiment_id=experiment_id),
+            "artifacts": self.result_db.get_artifacts_for_experiment(experiment_id),
         }
 
     def _collect_results_rows(

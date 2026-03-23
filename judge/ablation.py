@@ -25,18 +25,9 @@ def validate_ablation_coverage(recipe: dict[str, Any], result_db: Any) -> list[s
     # Collect all (variable, value) pairs already recorded
     recorded: set[tuple[str, str]] = set()
     for exp_id in experiment_ids:
-        exp = result_db.get_experiment(exp_id)
-        if exp is None:
-            continue
-        # Look up ablations for this experiment via the DB
-        # We query ablations table directly through the connection
-        if hasattr(result_db, '_conn') and result_db._conn is not None:
-            cursor = result_db._conn.execute(
-                "SELECT variable, value FROM ablations WHERE experiment_id = ?",
-                (exp_id,),
-            )
-            for row in cursor.fetchall():
-                recorded.add((row[0], row[1]))
+        ablations = result_db.get_ablations_for_experiment(exp_id)
+        for abl in ablations:
+            recorded.add((abl.get("variable", ""), abl.get("value", "")))
 
     # Determine which ablations are missing
     missing: list[str] = []

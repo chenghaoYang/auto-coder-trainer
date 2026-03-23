@@ -101,11 +101,13 @@ def _dispatch_rerun_seeds(
     if task["kind"] == "rerun_seed":
         seed = payload.get("seed")
         if seed is not None:
-            eval_cfg = recipe_copy.get("evaluation", recipe_copy.get("eval", {}))
+            eval_cfg = recipe_copy.get("eval", {})
             if isinstance(eval_cfg, dict):
                 eval_cfg["seeds"] = [seed]
 
-    tmp_file = Path(tempfile.mktemp(suffix=".json", prefix="rerun_recipe_"))
+    tmp_fd = tempfile.NamedTemporaryFile(suffix=".json", prefix="rerun_recipe_", delete=False)
+    tmp_file = Path(tmp_fd.name)
+    tmp_fd.close()
     tmp_file.write_text(json.dumps(recipe_copy, indent=2))
 
     try:
@@ -162,6 +164,7 @@ def _dispatch_run_ablation(
         return True
 
     # Generate and run ablation variants by modifying the recipe for each variant
+    import copy
     import tempfile
 
     success_count = 0
@@ -170,14 +173,16 @@ def _dispatch_run_ablation(
         values = spec.get("values", [])
         for value in values:
             print(f"[rerun]   Running ablation variant: {variable}={value}")
-            recipe_variant = json.loads(json.dumps(recipe))
+            recipe_variant = copy.deepcopy(recipe)
             # Apply the ablation override to the training config
             training_cfg = recipe_variant.get("training", {})
             if isinstance(training_cfg, dict):
                 training_cfg[variable] = value
                 recipe_variant["training"] = training_cfg
 
-            tmp_file = Path(tempfile.mktemp(suffix=".json", prefix="ablation_"))
+            tmp_fd = tempfile.NamedTemporaryFile(suffix=".json", prefix="ablation_", delete=False)
+            tmp_file = Path(tmp_fd.name)
+            tmp_fd.close()
             tmp_file.write_text(json.dumps(recipe_variant, indent=2))
             try:
                 from cli.train import run_train

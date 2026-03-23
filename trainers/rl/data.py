@@ -12,7 +12,7 @@ import logging
 import sys
 from typing import Any
 
-from trainers.utils.data_loading import load_from_path as _shared_load_from_path
+from trainers.utils.data_loading import apply_filters as _shared_apply_filters, load_from_path as _shared_load_from_path
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +74,7 @@ def load_rl_prompts(
     return all_prompts
 
 
-def _load_from_path(path: str) -> list[dict[str, Any]]:
-    """Load raw examples from a HuggingFace dataset or local file."""
-    return _shared_load_from_path(path)
+_load_from_path = _shared_load_from_path
 
 
 def _normalise_prompt(example: dict[str, Any], source_name: str = "") -> dict[str, Any]:
@@ -117,73 +115,10 @@ def _normalise_prompt(example: dict[str, Any], source_name: str = "") -> dict[st
 
 
 # ---------------------------------------------------------------------------
-# Filters
+# Filters — delegate to shared implementation in utils/data_loading.py
 # ---------------------------------------------------------------------------
 
-_FILTER_REGISTRY: dict[str, Any] = {}
-
-
-def _register_filter(name: str):
-    """Decorator to register a filter function."""
-    def decorator(fn):
-        _FILTER_REGISTRY[name] = fn
-        return fn
-    return decorator
-
-
-def _apply_filters(
-    prompts: list[dict[str, Any]],
-    filters: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Apply a chain of filters to the prompt list."""
-    for fspec in filters:
-        filter_type = fspec["type"]
-        params = fspec.get("params", {})
-        fn = _FILTER_REGISTRY.get(filter_type)
-        if fn is None:
-            logger.warning("Unknown filter type %r — skipping", filter_type)
-            continue
-        prompts = fn(prompts, **params)
-    return prompts
-
-
-@_register_filter("issue_free")
-def _filter_issue_free(prompts: list[dict[str, Any]], **_kwargs) -> list[dict[str, Any]]:
-    """Keep only prompts that have a non-empty prompt string."""
-    return [p for p in prompts if p.get("prompt")]
-
-
-@_register_filter("length")
-def _filter_length(
-    prompts: list[dict[str, Any]],
-    max_turns: int = 30,
-    max_prompt_chars: int | None = None,
-    **_kwargs,
-) -> list[dict[str, Any]]:
-    """Filter by prompt/trajectory length."""
-    filtered = []
-    for p in prompts:
-        # max_turns applies if the prompt carries turn info
-        turns = p.get("metadata", {}).get("turns", 0)
-        if turns and turns > max_turns:
-            continue
-        if max_prompt_chars and len(p.get("prompt", "")) > max_prompt_chars:
-            continue
-        filtered.append(p)
-    return filtered
-
-
-@_register_filter("quality_score")
-def _filter_quality_score(
-    prompts: list[dict[str, Any]],
-    min_score: float = 0.5,
-    **_kwargs,
-) -> list[dict[str, Any]]:
-    """Keep only prompts whose metadata quality_score >= min_score."""
-    return [
-        p for p in prompts
-        if p.get("metadata", {}).get("quality_score", 1.0) >= min_score
-    ]
+_apply_filters = _shared_apply_filters
 
 
 # ---------------------------------------------------------------------------
@@ -629,8 +564,8 @@ def _delete_pod(core_v1: Any, pod_name: str, namespace: str) -> None:
             pod_name, namespace,
             body={"gracePeriodSeconds": 0},
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to delete pod %s: %s", pod_name, exc)
 
 
 # -- Sandbox (generic container-over-SSH) backend ----------------------------
@@ -694,42 +629,30 @@ def _setup_sandbox_backend(env_config: dict[str, Any], timeout: int) -> dict[str
             remote_docker_cmd = " ".join(
                 _shell_quote(arg) for arg in docker_cmd[:-2]  # everything except "python -c CODE"
             )
-            # Pipe code into python via stdin instead of -c
             remote_cmd = f"{remote_docker_cmd} python -"
             cmd = ssh_prefix + [remote_cmd]
-            try:
-                result = sp.run(
-                    cmd, input=full_code, capture_output=True, text=True,
-                    timeout=timeout + 30,
-                )
-                tests_passed, tests_total = _parse_test_output(result.stdout + result.stderr)
-                return {
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "exit_code": result.returncode,
-                    "tests_passed": tests_passed,
-                    "tests_total": tests_total,
-                }
-            except sp.TimeoutExpired:
-                return _timeout_result(timeout, "Sandbox")
-            except Exception as exc:
-                return _error_result(f"Sandbox execution error: {exc}")
+            run_kwargs: dict[str, Any] = {"input": full_code}
         else:
             cmd = docker_cmd
-            try:
-                result = sp.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
-                tests_passed, tests_total = _parse_test_output(result.stdout + result.stderr)
-                return {
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "exit_code": result.returncode,
-                    "tests_passed": tests_passed,
-                    "tests_total": tests_total,
-                }
-            except sp.TimeoutExpired:
-                return _timeout_result(timeout, "Sandbox")
-            except Exception as exc:
-                return _error_result(f"Sandbox execution error: {exc}")
+            run_kwargs = {}
+
+        try:
+            result = sp.run(
+                cmd, capture_output=True, text=True,
+                timeout=timeout + 30, **run_kwargs,
+            )
+            tests_passed, tests_total = _parse_test_output(result.stdout + result.stderr)
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.returncode,
+                "tests_passed": tests_passed,
+                "tests_total": tests_total,
+            }
+        except sp.TimeoutExpired:
+            return _timeout_result(timeout, "Sandbox")
+        except Exception as exc:
+            return _error_result(f"Sandbox execution error: {exc}")
 
     return {"env_type": "remote/sandbox", "ready": True, "execute_fn": execute_fn}
 

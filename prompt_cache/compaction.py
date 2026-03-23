@@ -107,10 +107,11 @@ class CacheSafeCompactor:
         child.add_message(role="user", content=compaction_msg)
 
         # Verify cache compatibility
-        assert child.is_cache_compatible(self.parent_builder), (
-            "BUG: Compacted builder does not share parent's cache prefix. "
-            "This means something in layers 0-2 was modified during compaction."
-        )
+        if not child.is_cache_compatible(self.parent_builder):
+            raise RuntimeError(
+                "BUG: Compacted builder does not share parent's cache prefix. "
+                "This means something in layers 0-2 was modified during compaction."
+            )
 
         return child
 

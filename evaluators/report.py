@@ -1,6 +1,5 @@
 """Evaluation report formatting utilities."""
 
-from typing import Any
 from evaluators.base import BenchmarkResult
 
 

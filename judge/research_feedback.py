@@ -186,6 +186,20 @@ _CAUSE_TO_MODIFICATIONS: dict[str, list[dict[str, Any]]] = {
             "rationale": "Learning rate may have diverged from baseline configuration",
         },
     ],
+    "training_error": [
+        {
+            "parameter_path": "training.gradient_checkpointing",
+            "current_value": None,
+            "suggested_value": True,
+            "rationale": "Enable gradient checkpointing to reduce memory-related failures",
+        },
+        {
+            "parameter_path": "training.per_device_train_batch_size",
+            "current_value": None,
+            "suggested_value": "halve current value (min 1)",
+            "rationale": "Smaller batch size may avoid unclassified training errors",
+        },
+    ],
 }
 
 # Causes that justify triggering a full new research collection cycle

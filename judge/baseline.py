@@ -1,5 +1,6 @@
 """Baseline alignment utilities for experiment judge."""
 
+import json
 from typing import Any
 
 
@@ -24,7 +25,6 @@ def find_baseline(recipe: dict[str, Any], result_db: Any) -> dict[str, Any] | No
     def _primary_metric(exp: dict[str, Any]) -> float:
         metrics = exp.get("metrics_json", {})
         if isinstance(metrics, str):
-            import json
             metrics = json.loads(metrics)
         return metrics.get("resolve_rate", 0.0)
 

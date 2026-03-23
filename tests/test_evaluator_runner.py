@@ -50,7 +50,8 @@ class TestCoerceRowsToMetrics:
         assert "pass@1" in result
         assert "num_problems" in result
         assert result["num_problems"] == 2
-        assert 0.0 <= result["pass@1"] <= 1.0
+        # p1: 1-(C(5,1)/C(10,1))=0.5, p2: 1-(C(0,1)/C(10,1))=1.0 → mean ≈ 0.75
+        assert result["pass@1"] == pytest.approx(0.75, abs=0.05)
 
     def test_binary_passed_field(self):
         rows = [

@@ -45,7 +45,10 @@ def _parse_metrics(experiment: dict[str, Any]) -> dict[str, float]:
     """Extract metrics dict from an experiment record."""
     raw = experiment.get("metrics", experiment.get("metrics_json", {}))
     if isinstance(raw, str):
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
     return raw or {}
 
 
