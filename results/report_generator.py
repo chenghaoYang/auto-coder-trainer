@@ -656,6 +656,753 @@ class ReportGenerator:
         return "\n".join([header, sep] + rows) + "\n"
 
 
+    # ------------------------------------------------------------------
+    # Blog-style report (LoRA Insights format)
+    # ------------------------------------------------------------------
+
+    def generate_blog_report(
+        self,
+        experiment_ids: list[str],
+        output_path: str | Path,
+        *,
+        title: str | None = None,
+    ) -> str:
+        """Generate a blog-style experiment report inspired by Lightning AI's LoRA Insights.
+
+        Structure (following Sebastian Raschka's LoRA Insights blog):
+          1. Title + TL;DR (key takeaways)
+          2. Introduction & Motivation
+          3. Experimental Setup (model, dataset, hardware, benchmarks)
+          4. Experiments — each as a sequential diary entry with:
+             - Question / hypothesis
+             - Setup description
+             - Results table + interpretation
+             - Key finding
+          5. Ablation Studies
+          6. Cost & Efficiency Analysis
+          7. Practical Recommendations
+          8. Reproducibility
+          9. Conclusion
+        """
+        bundles = [self._fetch_experiment_data(exp_id) for exp_id in experiment_ids]
+
+        # Gather all data
+        all_recipes: list[dict] = []
+        all_results: list[dict] = []
+        all_ablations: list[dict] = []
+        all_verdicts: list[dict] = []
+
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            recipe_json = exp.get("recipe_json")
+            if isinstance(recipe_json, str):
+                try:
+                    recipe_json = json.loads(recipe_json)
+                except json.JSONDecodeError:
+                    recipe_json = {}
+            all_recipes.append(recipe_json or {})
+            all_results.append(data)
+            all_ablations.extend(data.get("ablations", []))
+            all_verdicts.extend(data.get("verdicts", []))
+
+        parts: list[str] = []
+
+        # === 1. Title + TL;DR ===
+        report_title = title or self._infer_title(bundles)
+        parts.append(f"# {report_title}\n")
+        parts.append(self._generate_tldr(bundles, all_verdicts))
+
+        # === 2. Introduction & Motivation ===
+        parts.append("## Introduction\n")
+        parts.append(self._generate_introduction(bundles, all_recipes))
+
+        # === 3. Experimental Setup ===
+        parts.append("## Experimental Setup\n")
+        parts.append(self._generate_setup_section(bundles, all_recipes))
+
+        # === 4. Experiments (sequential diary) ===
+        parts.append("## Experiments\n")
+        parts.append(self._generate_experiment_diary(bundles))
+
+        # === 5. Ablation Studies ===
+        if all_ablations:
+            parts.append("## Ablation Studies\n")
+            parts.append(self._generate_ablation_section(bundles, all_ablations))
+
+        # === 6. Cost & Efficiency ===
+        parts.append("## Cost & Efficiency Analysis\n")
+        parts.append(self._generate_cost_section(bundles, all_recipes))
+
+        # === 7. Practical Recommendations ===
+        parts.append("## Practical Recommendations\n")
+        parts.append(self._generate_recommendations(bundles, all_verdicts, all_ablations))
+
+        # === 8. Reproducibility ===
+        parts.append("## Reproducibility\n")
+        parts.append(self._generate_reproducibility(bundles, all_recipes))
+
+        # === 9. Conclusion ===
+        parts.append("## Conclusion\n")
+        parts.append(self._generate_conclusion(bundles, all_verdicts))
+
+        report = "\n".join(parts)
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report)
+
+        return report
+
+    # ------------------------------------------------------------------
+    # Blog report helper methods
+    # ------------------------------------------------------------------
+
+    def _infer_title(self, bundles: list[dict]) -> str:
+        """Infer a descriptive title from experiment data."""
+        exp = bundles[0]["experiment"] if bundles else None
+        if exp is None:
+            return "Experiment Report"
+        trainer_type = exp.get("trainer_type", "Training")
+        model = exp.get("model_base", "LLM")
+        backend = exp.get("backend", "")
+        type_labels = {
+            "sft": "Supervised Fine-Tuning",
+            "rl": "Reinforcement Learning",
+            "grpo": "GRPO Training",
+            "distill": "Trajectory Distillation",
+            "dpo": "Direct Preference Optimization",
+        }
+        method = type_labels.get(trainer_type, trainer_type.upper())
+        model_short = model.split("/")[-1] if "/" in model else model
+        n = len(bundles)
+        suffix = f": Insights from {n} Experiment{'s' if n > 1 else ''}" if n > 1 else ""
+        return f"{method} on {model_short}{suffix}"
+
+    def _generate_tldr(self, bundles: list[dict], verdicts: list[dict]) -> str:
+        """Generate a TL;DR / Key Takeaways section."""
+        lines = ["> **TL;DR** — Key takeaways from this experiment series:\n"]
+
+        # Summarize verdict outcomes
+        verdict_counts: dict[str, int] = {}
+        for v in verdicts:
+            vv = v.get("verdict", "unknown")
+            verdict_counts[vv] = verdict_counts.get(vv, 0) + 1
+
+        # Find best metrics across all experiments
+        best_metrics: dict[str, tuple[float, str]] = {}  # metric -> (value, exp_id)
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            rows = self._collect_results_rows(data)
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    key = r["metric"]
+                    if key not in best_metrics or r["value"] > best_metrics[key][0]:
+                        best_metrics[key] = (r["value"], exp.get("id", "?"))
+
+        if best_metrics:
+            top_metrics = sorted(best_metrics.items(), key=lambda x: x[1][0], reverse=True)[:3]
+            for metric, (value, _) in top_metrics:
+                lines.append(f"> - **{metric}**: best result = {value:.4f}")
+
+        accepted = verdict_counts.get("accept", 0)
+        total = len(bundles)
+        if total > 0:
+            lines.append(f"> - {accepted}/{total} experiment(s) accepted by the judge")
+
+        # Seed consistency
+        seed_variances = self._compute_seed_variances(bundles)
+        if seed_variances:
+            avg_cv = sum(seed_variances.values()) / len(seed_variances)
+            stability = "highly stable" if avg_cv < 0.02 else "stable" if avg_cv < 0.05 else "moderate" if avg_cv < 0.1 else "noisy"
+            lines.append(f"> - Results are **{stability}** across seeds (avg CV = {avg_cv:.3f})")
+
+        lines.append("")
+        return "\n".join(lines)
+
+    def _generate_introduction(self, bundles: list[dict], recipes: list[dict]) -> str:
+        """Generate introduction with motivation and context."""
+        lines = []
+
+        if not bundles or bundles[0]["experiment"] is None:
+            return "No experiment data available.\n"
+
+        exp = bundles[0]["experiment"]
+        trainer = exp.get("trainer_type", "unknown")
+        model = exp.get("model_base", "unknown")
+        n = len(bundles)
+
+        type_descriptions = {
+            "sft": "supervised fine-tuning (SFT) on curated trajectories",
+            "rl": "reinforcement learning with environment feedback",
+            "grpo": "Group Relative Policy Optimization (GRPO)",
+            "distill": "trajectory distillation from a stronger teacher model",
+            "dpo": "Direct Preference Optimization on paired trajectories",
+        }
+        method_desc = type_descriptions.get(trainer, f"{trainer}-based training")
+
+        lines.append(
+            f"This report documents {n} experiment{'s' if n > 1 else ''} "
+            f"using {method_desc} to train coding agents based on "
+            f"`{model}`. The experiments follow a structured recipe-driven "
+            f"pipeline and are automatically evaluated and judged.\n"
+        )
+
+        # Source papers
+        papers = set()
+        for recipe in recipes:
+            for p in recipe.get("source_papers", []):
+                papers.add(str(p))
+        if papers:
+            lines.append(f"**Source papers**: {', '.join(sorted(papers))}\n")
+
+        lines.append(
+            "Each experiment is presented as a sequential diary entry, "
+            "following the approach used in Raschka's "
+            "[LoRA Insights](https://lightning.ai/blog/lora-insights) — "
+            "we describe the question, setup, results, and key finding "
+            "for each run before drawing overall conclusions.\n"
+        )
+        return "\n".join(lines)
+
+    def _generate_setup_section(self, bundles: list[dict], recipes: list[dict]) -> str:
+        """Generate the experimental setup section with model, data, and hardware info."""
+        lines = []
+
+        # Model table
+        lines.append("### Model\n")
+        lines.append("| Parameter | Value |")
+        lines.append("| --- | --- |")
+        models_seen = set()
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            model = exp.get("model_base", "N/A")
+            if model in models_seen:
+                continue
+            models_seen.add(model)
+            lines.append(f"| Base model | `{model}` |")
+
+        for recipe in recipes:
+            model_cfg = recipe.get("model", {})
+            adapter = model_cfg.get("adapter", "N/A")
+            lines.append(f"| Adapter | {adapter} |")
+            if model_cfg.get("size"):
+                lines.append(f"| Size | {model_cfg['size']} |")
+            break
+        lines.append("")
+
+        # Dataset table
+        lines.append("### Dataset\n")
+        all_sources: list[dict] = []
+        all_filters: list[dict] = []
+        for recipe in recipes:
+            ds = recipe.get("dataset", {})
+            all_sources.extend(ds.get("sources", []))
+            all_filters.extend(ds.get("filters", []))
+
+        if all_sources:
+            lines.append("| Dataset | Path | Weight |")
+            lines.append("| --- | --- | --- |")
+            seen = set()
+            for src in all_sources:
+                key = src.get("name", "")
+                if key in seen:
+                    continue
+                seen.add(key)
+                lines.append(
+                    f"| {src.get('name', '?')} | `{src.get('path', '?')}` | {src.get('mix_weight', 1.0)} |"
+                )
+            lines.append("")
+
+        if all_filters:
+            lines.append("**Data filters**: " + ", ".join(
+                f"{f.get('type', '?')}({', '.join(f'{k}={v}' for k, v in f.get('params', {}).items())})"
+                for f in all_filters
+            ) + "\n")
+
+        # Training config
+        lines.append("### Training Configuration\n")
+        lines.append("| Parameter | Value |")
+        lines.append("| --- | --- |")
+        for data in bundles[:1]:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            lines.append(f"| Trainer | {exp.get('trainer_type', '?')} |")
+            lines.append(f"| Backend | {exp.get('backend', '?')} |")
+
+        for recipe in recipes[:1]:
+            trainer_cfg = recipe.get("trainer", {})
+            params = trainer_cfg.get("params", {})
+            for k, v in sorted(params.items()):
+                lines.append(f"| {k} | {v} |")
+            # Reward config
+            reward = trainer_cfg.get("reward", {})
+            if reward:
+                lines.append(f"| Reward type | {reward.get('type', '?')} |")
+                for comp in reward.get("components", []):
+                    lines.append(
+                        f"| Reward component | {comp.get('type', '?')} (weight={comp.get('weight', '?')}) |"
+                    )
+            break
+        lines.append("")
+
+        # Evaluation setup
+        lines.append("### Evaluation\n")
+        for recipe in recipes[:1]:
+            eval_cfg = recipe.get("eval", recipe.get("evaluation", {}))
+            benchmarks = eval_cfg.get("benchmarks", [])
+            seeds = eval_cfg.get("seeds", [])
+            metrics = eval_cfg.get("metrics", [])
+            lines.append(f"- **Benchmarks**: {', '.join(benchmarks) or 'N/A'}")
+            lines.append(f"- **Metrics**: {', '.join(metrics) or 'N/A'}")
+            lines.append(f"- **Seeds**: {', '.join(str(s) for s in seeds) or 'N/A'}")
+            lines.append(
+                f"- Each experiment is evaluated {len(seeds)} time(s) with different "
+                f"random seeds to assess reproducibility."
+            )
+            break
+        lines.append("")
+
+        # Hardware / budget
+        lines.append("### Hardware & Budget\n")
+        for recipe in recipes[:1]:
+            budget = recipe.get("budget", {})
+            if budget:
+                lines.append(f"- **GPU**: {budget.get('gpu_type', 'N/A')}")
+                lines.append(f"- **Max GPU hours**: {budget.get('max_gpu_hours', 'N/A')}")
+                if budget.get("max_cost_usd"):
+                    lines.append(f"- **Max cost**: ${budget['max_cost_usd']}")
+            else:
+                lines.append("- Budget not specified")
+            break
+        lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_experiment_diary(self, bundles: list[dict]) -> str:
+        """Generate sequential experiment entries, each as a diary section."""
+        lines = []
+
+        for i, data in enumerate(bundles, 1):
+            exp = data["experiment"]
+            if exp is None:
+                continue
+
+            exp_id = exp.get("id", "?")
+            recipe_id = exp.get("recipe_id", "?")
+            status = exp.get("status", "unknown")
+            trainer = exp.get("trainer_type", "?")
+            backend = exp.get("backend", "?")
+
+            # Section header
+            lines.append(f"### Experiment {i}: {recipe_id}\n")
+
+            # Question / hypothesis
+            lines.append(f"**Question**: How does {trainer}/{backend} perform on this recipe configuration?\n")
+
+            # Setup summary
+            lines.append(f"**Setup**: `{exp.get('model_base', '?')}` · {trainer} · {backend} · status={status}\n")
+
+            # Config hash for reproducibility
+            config_hash = exp.get("config_hash", "")
+            if config_hash:
+                lines.append(f"**Config hash**: `{config_hash}`\n")
+
+            # Results table
+            rows = self._collect_results_rows(data)
+            if rows:
+                lines.append("**Results**:\n")
+                lines.append("| Benchmark | Metric | Value | Seed |")
+                lines.append("| --- | --- | --- | --- |")
+                for r in rows:
+                    val = r["value"]
+                    if isinstance(val, float):
+                        val = f"{val:.4f}"
+                    lines.append(f"| {r['benchmark']} | {r['metric']} | {val} | {r['seed']} |")
+                lines.append("")
+
+                # Aggregate stats
+                analysis = self._analyze_metrics(rows)
+                if analysis["best"]:
+                    lines.append(
+                        f"**Best**: {analysis['best']['metric']} = {analysis['best']['value']:.4f}"
+                    )
+                if analysis["variance"]:
+                    low_var = all(v < 0.001 for v in analysis["variance"].values())
+                    if low_var:
+                        lines.append(
+                            "**Seed stability**: Excellent — variance across seeds is negligible."
+                        )
+                    else:
+                        var_text = ", ".join(
+                            f"{k}: {v:.6f}" for k, v in sorted(analysis["variance"].items())
+                        )
+                        lines.append(f"**Seed variance**: {var_text}")
+                lines.append("")
+            else:
+                # No eval results — check for training metrics
+                metrics = exp.get("metrics_json")
+                if isinstance(metrics, str):
+                    try:
+                        metrics = json.loads(metrics)
+                    except json.JSONDecodeError:
+                        metrics = {}
+                if isinstance(metrics, dict) and metrics:
+                    lines.append("**Training metrics**:\n")
+                    lines.append("| Metric | Value |")
+                    lines.append("| --- | --- |")
+                    for k, v in sorted(metrics.items()):
+                        if isinstance(v, float):
+                            lines.append(f"| {k} | {v:.4f} |")
+                        else:
+                            lines.append(f"| {k} | {v} |")
+                    lines.append("")
+
+            # Verdict
+            verdicts = data.get("verdicts", [])
+            if verdicts:
+                latest = verdicts[-1]
+                verdict_val = latest.get("verdict", "?")
+                reasoning = latest.get("reasoning", "")
+                emoji_map = {"accept": "PASS", "reject": "FAIL", "needs_rerun": "RERUN", "needs_ablation": "ABLATION"}
+                label = emoji_map.get(verdict_val, verdict_val.upper())
+                lines.append(f"**Judge verdict**: **{label}**")
+                if reasoning:
+                    lines.append(f"> {reasoning}")
+
+                suggestions = latest.get("suggestions_json", [])
+                if isinstance(suggestions, list) and suggestions:
+                    lines.append("\n**Suggestions**:")
+                    for s in suggestions:
+                        lines.append(f"- {s}")
+                lines.append("")
+
+            # Error info
+            if exp.get("error"):
+                lines.append(f"**Error**: {exp['error']}\n")
+
+            # Key finding (synthesized)
+            lines.append(self._synthesize_finding(data))
+            lines.append("---\n")
+
+        return "\n".join(lines)
+
+    def _generate_ablation_section(self, bundles: list[dict], ablations: list[dict]) -> str:
+        """Generate ablation studies section with comparison tables."""
+        lines = []
+
+        lines.append(
+            "Ablation studies isolate the effect of individual hyperparameters. "
+            "Each row below shows one variable held at a different value while "
+            "all other settings remain constant.\n"
+        )
+
+        # Group ablations by variable
+        by_variable: dict[str, list[dict]] = {}
+        for abl in ablations:
+            var = abl.get("variable", "unknown")
+            by_variable.setdefault(var, []).append(abl)
+
+        for variable, entries in sorted(by_variable.items()):
+            lines.append(f"### {variable}\n")
+            lines.append("| Value | Metrics |")
+            lines.append("| --- | --- |")
+
+            best_value = None
+            best_score = -float("inf")
+
+            for entry in entries:
+                abl_metrics = entry.get("metrics_json")
+                if isinstance(abl_metrics, str):
+                    try:
+                        abl_metrics = json.loads(abl_metrics)
+                    except json.JSONDecodeError:
+                        abl_metrics = {}
+                if isinstance(abl_metrics, dict):
+                    metric_text = ", ".join(
+                        f"{name}={value:.4f}" if isinstance(value, float) else f"{name}={value}"
+                        for name, value in sorted(abl_metrics.items())
+                    )
+                    # Track best
+                    for v in abl_metrics.values():
+                        if isinstance(v, (int, float)) and v > best_score:
+                            best_score = v
+                            best_value = entry.get("value", "?")
+                else:
+                    metric_text = "-"
+                lines.append(f"| {entry.get('value', '?')} | {metric_text} |")
+
+            if best_value is not None:
+                lines.append(f"\n**Best setting**: `{variable}` = `{best_value}`\n")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_cost_section(self, bundles: list[dict], recipes: list[dict]) -> str:
+        """Generate cost and efficiency analysis."""
+        lines = []
+
+        budget_info: list[dict] = []
+        for recipe in recipes:
+            b = recipe.get("budget", {})
+            if b:
+                budget_info.append(b)
+
+        if not budget_info:
+            lines.append("No budget information was recorded for these experiments.\n")
+            return "\n".join(lines)
+
+        lines.append("| Parameter | Value |")
+        lines.append("| --- | --- |")
+
+        total_gpu_hours = sum(b.get("max_gpu_hours", 0) for b in budget_info)
+        total_cost = sum(b.get("max_cost_usd", 0) for b in budget_info)
+
+        for b in budget_info[:1]:
+            lines.append(f"| GPU type | {b.get('gpu_type', 'N/A')} |")
+        lines.append(f"| Total GPU hours (budget) | {total_gpu_hours} |")
+        if total_cost:
+            lines.append(f"| Total cost (budget) | ${total_cost:.2f} |")
+        lines.append("")
+
+        # Performance per GPU hour
+        best_metrics: dict[str, float] = {}
+        for data in bundles:
+            rows = self._collect_results_rows(data)
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    key = r["metric"]
+                    if key not in best_metrics or r["value"] > best_metrics[key]:
+                        best_metrics[key] = r["value"]
+
+        if best_metrics and total_gpu_hours > 0:
+            lines.append("**Performance per GPU-hour** (budget-normalized):\n")
+            for metric, value in sorted(best_metrics.items()):
+                per_hour = value / total_gpu_hours
+                lines.append(f"- {metric}: {per_hour:.4f} per GPU-hour (best={value:.4f})")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_recommendations(
+        self,
+        bundles: list[dict],
+        verdicts: list[dict],
+        ablations: list[dict],
+    ) -> str:
+        """Synthesize practical recommendations from results and verdicts."""
+        lines = []
+        recommendations: list[str] = []
+
+        # From verdicts
+        for v in verdicts:
+            suggestions = v.get("suggestions_json", [])
+            if isinstance(suggestions, list):
+                recommendations.extend(str(s) for s in suggestions)
+            elif suggestions:
+                recommendations.append(str(suggestions))
+
+        # From ablations — recommend best settings
+        by_variable: dict[str, list[tuple[Any, float]]] = {}
+        for abl in ablations:
+            var = abl.get("variable", "")
+            abl_metrics = abl.get("metrics_json")
+            if isinstance(abl_metrics, str):
+                try:
+                    abl_metrics = json.loads(abl_metrics)
+                except json.JSONDecodeError:
+                    continue
+            if isinstance(abl_metrics, dict):
+                for mv in abl_metrics.values():
+                    if isinstance(mv, (int, float)):
+                        by_variable.setdefault(var, []).append((abl.get("value"), mv))
+                        break
+
+        for var, entries in by_variable.items():
+            if entries:
+                best_val, best_score = max(entries, key=lambda x: x[1])
+                recommendations.append(
+                    f"For `{var}`, the best setting is `{best_val}` (score={best_score:.4f})."
+                )
+
+        # Seed stability advice
+        seed_variances = self._compute_seed_variances(bundles)
+        if seed_variances:
+            high_var = {k: v for k, v in seed_variances.items() if v > 0.05}
+            if high_var:
+                recommendations.append(
+                    "Some metrics show high variance across seeds: "
+                    + ", ".join(f"{k} (CV={v:.3f})" for k, v in high_var.items())
+                    + ". Consider running more seeds or investigating instability."
+                )
+            else:
+                recommendations.append(
+                    "Results are stable across seeds — 3 seeds provide sufficient confidence."
+                )
+
+        if not recommendations:
+            lines.append("No specific recommendations could be derived from the current results.\n")
+        else:
+            seen = set()
+            for i, rec in enumerate(recommendations, 1):
+                if rec in seen:
+                    continue
+                seen.add(rec)
+                lines.append(f"{i}. {rec}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_reproducibility(self, bundles: list[dict], recipes: list[dict]) -> str:
+        """Generate reproducibility information."""
+        lines = []
+
+        lines.append("To reproduce these experiments:\n")
+        lines.append("```bash")
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            recipe_id = exp.get("recipe_id", "?")
+            lines.append(f"# Experiment: {exp.get('id', '?')}")
+            lines.append(f"act train recipes/examples/{recipe_id}.recipe.json")
+        lines.append("```\n")
+
+        # Config hashes
+        hashes = []
+        for data in bundles:
+            exp = data["experiment"]
+            if exp and exp.get("config_hash"):
+                hashes.append(f"- `{exp['id']}`: `{exp['config_hash']}`")
+        if hashes:
+            lines.append("**Config hashes** (for deduplication):\n")
+            lines.extend(hashes)
+            lines.append("")
+
+        # Seeds
+        all_seeds: set[int] = set()
+        for recipe in recipes:
+            eval_cfg = recipe.get("eval", recipe.get("evaluation", {}))
+            for s in eval_cfg.get("seeds", []):
+                all_seeds.add(s)
+        if all_seeds:
+            lines.append(f"**Seeds used**: {', '.join(str(s) for s in sorted(all_seeds))}\n")
+
+        return "\n".join(lines)
+
+    def _generate_conclusion(self, bundles: list[dict], verdicts: list[dict]) -> str:
+        """Generate conclusion summarizing key outcomes."""
+        lines = []
+
+        if not bundles:
+            return "No experiments to conclude on.\n"
+
+        total = len(bundles)
+        accepted = sum(
+            1 for v in verdicts if v.get("verdict") == "accept"
+        )
+        rejected = sum(
+            1 for v in verdicts if v.get("verdict") == "reject"
+        )
+
+        best_metrics: dict[str, tuple[float, str]] = {}
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            rows = self._collect_results_rows(data)
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    key = r["metric"]
+                    if key not in best_metrics or r["value"] > best_metrics[key][0]:
+                        best_metrics[key] = (r["value"], exp.get("id", "?"))
+
+        lines.append(
+            f"Across {total} experiment(s), {accepted} were accepted and {rejected} rejected "
+            f"by the automated judge.\n"
+        )
+
+        if best_metrics:
+            lines.append("**Best results achieved**:\n")
+            for metric, (value, exp_id) in sorted(best_metrics.items()):
+                lines.append(f"- **{metric}**: {value:.4f} (experiment `{exp_id}`)")
+            lines.append("")
+
+        # Overall takeaway from verdicts
+        if accepted == total and total > 0:
+            lines.append(
+                "All experiments passed the judge's quality checks, including baseline "
+                "alignment, seed consistency, and ablation coverage. The results are "
+                "ready for downstream deployment or further iteration.\n"
+            )
+        elif rejected == total and total > 0:
+            lines.append(
+                "All experiments were rejected. Review the judge's suggestions above "
+                "and consider adjusting the recipe before re-running.\n"
+            )
+        elif total > 0:
+            lines.append(
+                "Mixed results suggest the recipe is partially effective. "
+                "Focus future iterations on the configurations that passed "
+                "and ablate the variables identified by the judge.\n"
+            )
+
+        return "\n".join(lines)
+
+    def _synthesize_finding(self, data: dict) -> str:
+        """Synthesize a key finding for a single experiment."""
+        exp = data["experiment"]
+        if exp is None:
+            return "**Finding**: No data available.\n"
+
+        rows = self._collect_results_rows(data)
+        verdicts = data.get("verdicts", [])
+
+        if not rows and not verdicts:
+            status = exp.get("status", "unknown")
+            return f"**Finding**: Experiment status is `{status}`. No evaluation results available yet.\n"
+
+        # Best metric
+        analysis = self._analyze_metrics(rows)
+        best = analysis.get("best")
+
+        verdict_text = ""
+        if verdicts:
+            latest = verdicts[-1]
+            verdict_text = f" The judge's verdict is **{latest.get('verdict', '?')}**."
+
+        if best:
+            return (
+                f"**Finding**: The best metric is {best['metric']} = {best['value']:.4f}."
+                f"{verdict_text}\n"
+            )
+        return f"**Finding**: Experiment completed.{verdict_text}\n"
+
+    def _compute_seed_variances(self, bundles: list[dict]) -> dict[str, float]:
+        """Compute coefficient of variation for each metric across seeds."""
+        metric_values: dict[str, list[float]] = {}
+        for data in bundles:
+            rows = self._collect_results_rows(data)
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    metric_values.setdefault(r["metric"], []).append(float(r["value"]))
+
+        result: dict[str, float] = {}
+        for metric, values in metric_values.items():
+            if len(values) >= 2:
+                mean = sum(values) / len(values)
+                if mean > 0:
+                    std = statistics.stdev(values)
+                    result[metric] = std / mean  # CV
+        return result
+
+
 def _latex_escape(text: str) -> str:
     """Escape special LaTeX characters in *text*."""
     replacements = [

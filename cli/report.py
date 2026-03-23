@@ -95,6 +95,10 @@ def run_report(args: argparse.Namespace) -> None:
             output_file = output_dir / "report.tex"
             content = generator.generate_latex(experiment_ids, output_file)
             print(f"[report] LaTeX report written to {output_file}")
+        elif fmt == "blog":
+            output_file = output_dir / "report.md"
+            content = generator.generate_blog_report(experiment_ids, output_file)
+            print(f"[report] Blog-style report written to {output_file}")
         else:
             output_file = output_dir / "report.md"
             content = generator.generate_markdown(experiment_ids, output_file)

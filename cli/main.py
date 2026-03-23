@@ -41,7 +41,7 @@ def main():
     report_parser = subparsers.add_parser("report", help="Generate technical report from experiment results")
     report_parser.add_argument("--experiment-id", type=str, help="Experiment ID to report on")
     report_parser.add_argument("--recipe-id", type=str, help="Recipe ID to report on (all experiments)")
-    report_parser.add_argument("--format", choices=["markdown", "latex"], default="markdown")
+    report_parser.add_argument("--format", choices=["markdown", "latex", "blog"], default="markdown")
     report_parser.add_argument("--output", type=str, default="reports/", help="Output directory")
 
     # status
@@ -54,6 +54,21 @@ def main():
     rerun_parser = subparsers.add_parser("rerun", help="Auto-dispatch pending tasks for a recipe")
     rerun_parser.add_argument("--recipe-id", type=str, required=True, help="Recipe ID to process")
     rerun_parser.add_argument("--dry-run", action="store_true", help="Show plan without executing")
+
+    # pipeline
+    pipeline_parser = subparsers.add_parser(
+        "pipeline",
+        help="Run the full agent team: collect → compose → train → judge → report",
+    )
+    pipeline_parser.add_argument("--query", type=str, help="Research query (starts from collect phase)")
+    pipeline_parser.add_argument("--atoms", type=str, help="Comma-separated atom names (for compose)")
+    pipeline_parser.add_argument("--recipe", type=str, help="Path to existing recipe (skips collect/compose)")
+    pipeline_parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-Coder-7B-Instruct")
+    pipeline_parser.add_argument("--output-dir", type=str, default="outputs/")
+    pipeline_parser.add_argument("--report-dir", type=str, default="reports/")
+    pipeline_parser.add_argument("--report-format", choices=["blog", "markdown", "latex"], default="blog")
+    pipeline_parser.add_argument("--max-iterations", type=int, default=3, help="Max train→judge loops")
+    pipeline_parser.add_argument("--dry-run", action="store_true", help="Validate without training")
 
     args = parser.parse_args()
 
@@ -80,6 +95,9 @@ def main():
     elif args.command == "rerun":
         from cli.rerun import run_rerun
         run_rerun(args)
+    elif args.command == "pipeline":
+        from cli.pipeline import run_pipeline
+        run_pipeline(args)
 
 
 if __name__ == "__main__":
