@@ -1,4 +1,4 @@
-.PHONY: collect compose train report status install dev test clean help validate-schema benchmark-quick benchmark-standard benchmark-full result-card
+.PHONY: collect compose train report status install dev test clean help validate-schema benchmark-quick benchmark-standard benchmark-full result-card swe-lego swe-lego-dry swe-lego-import
 
 PYTHON ?= python3
 
@@ -46,6 +46,15 @@ benchmark-full: ## Run full benchmark suite (SFT + RL + distill)
 
 result-card: ## Generate result card from experiment (usage: make result-card EXP_ID=exp_001)
 	$(PYTHON) -c "from benchmarks.result_card import generate_result_card, render_result_card_markdown; from results.db import ResultDB; db = ResultDB(); db.connect(); card = generate_result_card('$(EXP_ID)', db); print(render_result_card_markdown(card)); db.close()"
+
+swe-lego: ## Run SWE-Lego 8B full pipeline (generate + submit SLURM)
+	$(PYTHON) -m cli.main train recipes/examples/swe-lego-8b.recipe.json --output-dir outputs/
+
+swe-lego-dry: ## Dry-run SWE-Lego 8B (generate scripts only, no SLURM submit)
+	$(PYTHON) -m cli.main train recipes/examples/swe-lego-8b.recipe.json --output-dir outputs/ --dry-run
+
+swe-lego-import: ## Import SWE-Lego results into DB and generate report
+	$(PYTHON) -m cli.main train recipes/examples/swe-lego-8b.recipe.json --import-results outputs/swe-lego-qwen3-8b/swe_lego/
 
 clean: ## Clean build artifacts
 	rm -rf build/ dist/ *.egg-info __pycache__ .pytest_cache

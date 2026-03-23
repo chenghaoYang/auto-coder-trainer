@@ -40,6 +40,8 @@ def main():
     train_parser.add_argument("recipe", type=str, help="Path to recipe JSON file")
     train_parser.add_argument("--output-dir", type=str, default="outputs/", help="Output directory")
     train_parser.add_argument("--dry-run", action="store_true", help="Validate recipe without training")
+    train_parser.add_argument("--no-submit", action="store_true", help="Generate SLURM scripts without submitting")
+    train_parser.add_argument("--import-results", type=str, metavar="BUNDLE_DIR", help="Import results from a completed SWE-Lego bundle")
 
     # report
     report_parser = subparsers.add_parser("report", help="Generate technical report from experiment results")

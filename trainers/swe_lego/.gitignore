@@ -1,0 +1,5 @@
+# The SWE-Lego repo is cloned at runtime via setup_swe_lego.sh.
+# Only track our custom configs, not the entire upstream repo.
+SWE-Lego/
+!SWE-Lego/LLaMA-Factory-0.9.4.dev0/examples/train_full/swe_lego_qwen3_8b_single_gpu.yaml
+!SWE-Lego/LLaMA-Factory-0.9.4.dev0/examples/train_full/swe_lego_verifier_qwen3_8b_single_gpu.yaml

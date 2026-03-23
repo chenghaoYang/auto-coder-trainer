@@ -56,7 +56,7 @@
       "required": ["type"],
       "properties": {
         "type": { "enum": ["sft", "rl", "dpo", "grpo", "distill"] },
-        "backend": { "enum": ["trl", "verl", "tinyzero", "openr1", "agent_distill", "redi"], "default": "verl", "description": "Native backends: RL -> veRL, SFT/distill -> TRL. External upstream launchers: tinyzero, openr1, agent_distill, redi." },
+        "backend": { "enum": ["trl", "verl", "tinyzero", "openr1", "agent_distill", "redi", "swe_lego"], "default": "verl", "description": "Native backends: RL -> veRL, SFT/distill -> TRL. External upstream launchers: tinyzero, openr1, agent_distill, redi, swe_lego." },
         "params": { "type": "object", "description": "Training hyperparameters (lr, epochs, batch_size, ppo_epochs, rollout_batch_size, etc.)" },
         "reward": {
           "type": "object",
@@ -122,7 +122,25 @@
       "properties": {
         "max_gpu_hours": { "type": "number" },
         "gpu_type": { "type": "string" },
-        "max_cost_usd": { "type": "number" }
+        "max_cost_usd": { "type": "number" },
+        "slurm": {
+          "type": "object",
+          "description": "SLURM job scheduler configuration for HPC execution.",
+          "properties": {
+            "partition": { "type": "string" },
+            "qos": { "type": "string" },
+            "nodes": { "type": "integer", "default": 1 },
+            "gpus_per_node": { "type": "integer", "default": 1 },
+            "cpus_per_task": { "type": "integer", "default": 16 },
+            "mem": { "type": "string", "default": "256G" },
+            "time": { "type": "string", "default": "72:00:00" },
+            "account": { "type": "string" },
+            "constraint": { "type": "string" },
+            "modules": { "type": "array", "items": { "type": "string" } },
+            "conda_env": { "type": "string" },
+            "extra_sbatch": { "type": "array", "items": { "type": "string" } }
+          }
+        }
       }
     }
   }

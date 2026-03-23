@@ -14,7 +14,7 @@ from typing import Any
 from trainers.base import TrainResult
 
 
-_EXTERNAL_PREPARED_BACKENDS = {"tinyzero", "openr1", "agent_distill", "redi"}
+_EXTERNAL_PREPARED_BACKENDS = {"tinyzero", "openr1", "agent_distill", "redi", "swe_lego"}
 
 
 def _plan_dir(output_dir: Path, recipe_id: str) -> Path:
@@ -28,6 +28,7 @@ def _backend_label(backend: str) -> str:
         "openr1": "Open-R1",
         "agent_distill": "Agent Distillation",
         "redi": "REDI",
+        "swe_lego": "SWE-Lego (LLaMA-Factory)",
     }
     return labels.get(backend, backend)
 
@@ -543,6 +544,18 @@ def run_train(args: argparse.Namespace) -> None:
         6. Submit to experiment judge
         7. Store results in result DB
     """
+    # Handle --import-results mode
+    import_results_dir = getattr(args, "import_results", None)
+    if import_results_dir:
+        from trainers.swe_lego.results_bridge import import_and_judge
+
+        print(f"[train] Importing results from {import_results_dir}")
+        result = import_and_judge(import_results_dir, recipe_id="imported")
+        print(f"[train] Import complete — experiment_id: {result.get('experiment_id')}")
+        if result.get("verdict"):
+            print(f"[train] Verdict: {result['verdict']}")
+        return
+
     recipe_path = Path(args.recipe)
     output_dir = Path(getattr(args, "output_dir", "outputs/"))
     dry_run = getattr(args, "dry_run", False)
@@ -646,7 +659,30 @@ def run_train(args: argparse.Namespace) -> None:
         except Exception as exc:
             print(f"[train] Error building TinyZero launch bundle: {exc}")
             return
-    elif config.backend in (_EXTERNAL_PREPARED_BACKENDS - {"tinyzero"}):
+    elif config.backend == "swe_lego":
+        try:
+            from trainers.swe_lego import (
+                build_swe_lego_launcher_bundle,
+                write_swe_lego_launcher_bundle,
+            )
+
+            launcher_bundle = build_swe_lego_launcher_bundle(config.__dict__, output_dir)
+            launcher_paths = write_swe_lego_launcher_bundle(launcher_bundle)
+            print(f"[train] SWE-Lego launch bundle ready: {launcher_paths['run_script']}")
+
+            # Auto SLURM pipeline if slurm config present and not --no-submit
+            slurm_cfg = config.budget.get("slurm")
+            if slurm_cfg and not getattr(args, "no_submit", False) and not dry_run:
+                from trainers.slurm.submitter import run_swe_lego_pipeline
+
+                pipeline_result = run_swe_lego_pipeline(
+                    launcher_paths["bundle_dir"], slurm_cfg
+                )
+                print(f"[train] SLURM pipeline submitted: {pipeline_result}")
+        except Exception as exc:
+            print(f"[train] Error building SWE-Lego launch bundle: {exc}")
+            return
+    elif config.backend in (_EXTERNAL_PREPARED_BACKENDS - {"tinyzero", "swe_lego"}):
         try:
             from trainers.upstream import (
                 build_upstream_launcher_bundle,
