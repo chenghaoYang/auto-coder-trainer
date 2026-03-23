@@ -8,6 +8,7 @@ import pytest
 from evaluators.runner import (
     _coerce_metrics_from_payload,
     _coerce_rows_to_metrics,
+    _normalize_metrics,
     _resolve_local_metrics,
     run_evaluation,
 )
@@ -68,6 +69,21 @@ class TestCoerceRowsToMetrics:
     def test_unrecognised_schema_returns_empty(self):
         rows = [{"foo": "bar"}, {"baz": 42}]
         assert _coerce_rows_to_metrics(rows) == {}
+
+
+class TestNormalizeMetrics:
+    def test_normalizes_metric_keys_and_numeric_values(self):
+        metrics = {
+            "pass_at_1": 0.2,
+            "PASS_10": 0.8,
+            "resolve_rate_percent": 73.1,
+            "name": "ignored",
+        }
+        assert _normalize_metrics(metrics) == {
+            "pass@1": 0.2,
+            "pass@10": 0.8,
+            "resolve_rate": 73.1,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +150,7 @@ class TestRunEvaluation:
         )
         assert result["metrics"] == {"pass@1": 0.7}
         assert "details" in result
+        assert result["details"]["schema_version"] == "eval.v1"
 
     def test_raises_for_missing_benchmark(self, tmp_path: Path):
         with pytest.raises(RuntimeError):
