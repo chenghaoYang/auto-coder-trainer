@@ -344,25 +344,457 @@ def _setup_docker_env(env_config: dict[str, Any], timeout: int) -> dict[str, Any
 
 
 def _setup_remote_env(env_config: dict[str, Any], timeout: int) -> dict[str, Any]:
-    """Placeholder for remote sandbox (e.g. Modal, E2B, etc.)."""
+    """Set up a remote sandboxed execution environment.
+
+    Supported backends (via ``env_config["backend"]``):
+
+    * ``"modal"``   – Modal (modal.com) serverless sandbox
+    * ``"e2b"``     – E2B (e2b.dev) code interpreter sandbox
+    * ``"k8s"``     – Ephemeral Kubernetes pod via the official client
+    * ``"sandbox"`` – Generic subprocess-in-container via Docker-over-SSH
+
+    Common env_config keys consumed by all backends:
+        timeout (int), memory_limit (str), network (bool, default False).
+    """
     backend = env_config.get("backend", "unspecified")
-    logger.warning(
-        "Remote rollout environment (backend=%r) is not yet implemented. "
-        "Supported remote backends that could be integrated: "
-        "Modal (modal.com), E2B (e2b.dev), fly.io Machines, AWS Lambda. "
-        "Contributions welcome.",
-        backend,
+    dispatchers = {
+        "modal": _setup_modal_backend,
+        "e2b": _setup_e2b_backend,
+        "k8s": _setup_k8s_backend,
+        "sandbox": _setup_sandbox_backend,
+    }
+    dispatcher = dispatchers.get(backend)
+    if dispatcher is None:
+        raise ValueError(
+            f"Unknown remote backend {backend!r}. "
+            f"Supported backends: {sorted(dispatchers)}."
+        )
+    return dispatcher(env_config, timeout)
+
+
+# -- Modal backend -----------------------------------------------------------
+
+def _setup_modal_backend(env_config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Set up a Modal sandbox backend."""
+    try:
+        import modal  # noqa: F811
+    except ImportError:
+        msg = (
+            "The 'modal' package is required for the Modal backend. "
+            "Install it with: pip install modal"
+        )
+        logger.warning(msg)
+        return _not_ready_env("remote/modal", msg)
+
+    image_name = env_config.get("image", "python:3.11-slim")
+    memory_limit = env_config.get("memory_limit", "4g")
+    network_disabled = not env_config.get("network", False)
+    app_name = env_config.get("modal_app", "rl-rollout")
+
+    # Convert memory string like "4g" to MB int for Modal
+    memory_mb = _parse_memory_mb(memory_limit)
+
+    logger.info(
+        "Modal backend: app=%s, image=%s, memory=%dMB, network=%s, timeout=%ds",
+        app_name, image_name, memory_mb,
+        "disabled" if network_disabled else "enabled", timeout,
     )
 
     def execute_fn(code: str, test_code: str = "") -> dict[str, Any]:
-        raise NotImplementedError(
-            f"Remote rollout environment (backend={backend!r}) is not yet implemented. "
-            "To add support, implement a remote sandbox adapter for one of: "
-            "Modal (modal.com), E2B (e2b.dev), fly.io Machines, or AWS Lambda. "
-            "Required env_config keys: 'backend', 'endpoint', 'api_key'."
+        full_code = code + ("\n\n" + test_code if test_code else "")
+        try:
+            sb = modal.Sandbox.create(
+                "python", "-c", full_code,
+                image=modal.Image.from_registry(image_name),
+                timeout=timeout,
+                memory=memory_mb,
+                **({"block_network": True} if network_disabled else {}),
+                app_name=app_name,
+            )
+            sb.wait()
+            stdout = sb.stdout.read()
+            stderr = sb.stderr.read()
+            exit_code = sb.returncode or 0
+            tests_passed, tests_total = _parse_test_output(stdout + stderr)
+            return {
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "tests_passed": tests_passed,
+                "tests_total": tests_total,
+            }
+        except modal.exception.SandboxTimeoutError:
+            return _timeout_result(timeout, "Modal")
+        except Exception as exc:
+            logger.warning("Modal execution failed: %s", exc)
+            return _error_result(f"Modal execution error: {exc}")
+
+    return {"env_type": "remote/modal", "ready": True, "execute_fn": execute_fn}
+
+
+# -- E2B backend -------------------------------------------------------------
+
+def _setup_e2b_backend(env_config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Set up an E2B code interpreter backend."""
+    try:
+        from e2b_code_interpreter import Sandbox as E2BSandbox  # noqa: F811
+    except ImportError:
+        msg = (
+            "The 'e2b-code-interpreter' package is required for the E2B backend. "
+            "Install it with: pip install e2b-code-interpreter"
+        )
+        logger.warning(msg)
+        return _not_ready_env("remote/e2b", msg)
+
+    api_key = env_config.get("api_key")
+    template = env_config.get("e2b_template", "base")
+    memory_limit = env_config.get("memory_limit", "4g")
+    network_disabled = not env_config.get("network", False)
+
+    if not api_key:
+        msg = "E2B backend requires 'api_key' in env_config (E2B_API_KEY)."
+        logger.warning(msg)
+        return _not_ready_env("remote/e2b", msg)
+
+    logger.info(
+        "E2B backend: template=%s, timeout=%ds, network=%s",
+        template, timeout, "disabled" if network_disabled else "enabled",
+    )
+
+    def execute_fn(code: str, test_code: str = "") -> dict[str, Any]:
+        full_code = code + ("\n\n" + test_code if test_code else "")
+        sandbox = None
+        try:
+            sandbox = E2BSandbox(
+                api_key=api_key,
+                template=template,
+                metadata={"memory": memory_limit},
+            )
+            execution = sandbox.run_code(full_code, timeout=timeout)
+
+            stdout_parts = []
+            stderr_parts = []
+            for log in execution.logs.stdout:
+                stdout_parts.append(log)
+            for log in execution.logs.stderr:
+                stderr_parts.append(log)
+            stdout = "".join(stdout_parts)
+            stderr = "".join(stderr_parts)
+            exit_code = 0 if execution.error is None else 1
+            if execution.error is not None:
+                stderr += f"\n{execution.error.name}: {execution.error.value}"
+
+            tests_passed, tests_total = _parse_test_output(stdout + stderr)
+            return {
+                "stdout": stdout,
+                "stderr": stderr,
+                "exit_code": exit_code,
+                "tests_passed": tests_passed,
+                "tests_total": tests_total,
+            }
+        except TimeoutError:
+            return _timeout_result(timeout, "E2B")
+        except Exception as exc:
+            logger.warning("E2B execution failed: %s", exc)
+            return _error_result(f"E2B execution error: {exc}")
+        finally:
+            if sandbox is not None:
+                try:
+                    sandbox.kill()
+                except Exception:
+                    pass
+
+    return {"env_type": "remote/e2b", "ready": True, "execute_fn": execute_fn}
+
+
+# -- Kubernetes backend -------------------------------------------------------
+
+def _setup_k8s_backend(env_config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Set up an ephemeral Kubernetes pod backend."""
+    try:
+        from kubernetes import client as k8s_client, config as k8s_config  # noqa: F811
+    except ImportError:
+        msg = (
+            "The 'kubernetes' package is required for the K8s backend. "
+            "Install it with: pip install kubernetes"
+        )
+        logger.warning(msg)
+        return _not_ready_env("remote/k8s", msg)
+
+    image = env_config.get("image", "python:3.11-slim")
+    memory_limit = env_config.get("memory_limit", "4g")
+    namespace = env_config.get("k8s_namespace", "default")
+    network_disabled = not env_config.get("network", False)
+    kubeconfig = env_config.get("kubeconfig")
+
+    # Load kube config
+    try:
+        if kubeconfig:
+            k8s_config.load_kube_config(config_file=kubeconfig)
+        else:
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                k8s_config.load_kube_config()
+    except Exception as exc:
+        msg = f"Failed to load Kubernetes configuration: {exc}"
+        logger.warning(msg)
+        return _not_ready_env("remote/k8s", msg)
+
+    core_v1 = k8s_client.CoreV1Api()
+
+    logger.info(
+        "K8s backend: namespace=%s, image=%s, memory=%s, network=%s, timeout=%ds",
+        namespace, image, memory_limit,
+        "disabled" if network_disabled else "enabled", timeout,
+    )
+
+    def execute_fn(code: str, test_code: str = "") -> dict[str, Any]:
+        import time
+        import uuid
+
+        full_code = code + ("\n\n" + test_code if test_code else "")
+        pod_name = f"rl-rollout-{uuid.uuid4().hex[:12]}"
+
+        # Build the pod spec
+        container = k8s_client.V1Container(
+            name="runner",
+            image=image,
+            command=["python", "-c", full_code],
+            resources=k8s_client.V1ResourceRequirements(
+                limits={"memory": memory_limit},
+            ),
         )
 
-    return {"env_type": "remote", "ready": False, "execute_fn": execute_fn}
+        # Network policy: use a label so a NetworkPolicy can deny egress
+        labels = {"app": "rl-rollout", "rl-network": "deny" if network_disabled else "allow"}
+        pod_spec = k8s_client.V1PodSpec(
+            containers=[container],
+            restart_policy="Never",
+            # Disable service account token auto-mount for security
+            automount_service_account_token=False,
+            **({"dns_policy": "None", "dns_config": k8s_client.V1PodDNSConfig(
+                nameservers=["127.0.0.1"],
+            )} if network_disabled else {}),
+        )
+        pod = k8s_client.V1Pod(
+            metadata=k8s_client.V1ObjectMeta(name=pod_name, labels=labels),
+            spec=pod_spec,
+        )
+
+        try:
+            core_v1.create_namespaced_pod(namespace=namespace, body=pod)
+
+            # Wait for pod to complete
+            deadline = time.monotonic() + timeout + 30  # extra grace for k8s overhead
+            phase = "Pending"
+            while time.monotonic() < deadline:
+                pod_status = core_v1.read_namespaced_pod_status(pod_name, namespace)
+                phase = pod_status.status.phase
+                if phase in ("Succeeded", "Failed"):
+                    break
+                time.sleep(1)
+
+            if phase not in ("Succeeded", "Failed"):
+                # Timed out
+                _delete_pod(core_v1, pod_name, namespace)
+                return _timeout_result(timeout, "K8s")
+
+            # Retrieve logs
+            logs = core_v1.read_namespaced_pod_log(pod_name, namespace)
+            exit_code = 0 if phase == "Succeeded" else 1
+
+            # Best-effort split stdout/stderr (k8s logs merges them)
+            tests_passed, tests_total = _parse_test_output(logs)
+            return {
+                "stdout": logs,
+                "stderr": "" if phase == "Succeeded" else logs,
+                "exit_code": exit_code,
+                "tests_passed": tests_passed,
+                "tests_total": tests_total,
+            }
+        except Exception as exc:
+            logger.warning("K8s execution failed: %s", exc)
+            return _error_result(f"K8s execution error: {exc}")
+        finally:
+            _delete_pod(core_v1, pod_name, namespace)
+
+    return {"env_type": "remote/k8s", "ready": True, "execute_fn": execute_fn}
+
+
+def _delete_pod(core_v1: Any, pod_name: str, namespace: str) -> None:
+    """Best-effort deletion of an ephemeral pod."""
+    try:
+        core_v1.delete_namespaced_pod(
+            pod_name, namespace,
+            body={"gracePeriodSeconds": 0},
+        )
+    except Exception:
+        pass
+
+
+# -- Sandbox (generic container-over-SSH) backend ----------------------------
+
+def _setup_sandbox_backend(env_config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Set up a generic subprocess-in-container sandbox backend.
+
+    This backend shells out to ``docker`` on a (possibly remote) host via an
+    optional SSH wrapper, providing a middle ground between the local Docker
+    backend and fully managed cloud services.  When no ``sandbox_host`` is
+    configured it behaves like the Docker backend but is routed through the
+    remote env_type path.
+    """
+    import shutil
+    import subprocess
+
+    image = env_config.get("image", "python:3.11-slim")
+    memory_limit = env_config.get("memory_limit", "4g")
+    network_disabled = not env_config.get("network", False)
+    sandbox_host = env_config.get("sandbox_host")  # e.g. "user@host"
+    ssh_key = env_config.get("ssh_key")
+
+    # Build the optional SSH prefix
+    ssh_prefix: list[str] = []
+    if sandbox_host:
+        ssh_prefix = ["ssh", "-o", "StrictHostKeyChecking=no"]
+        if ssh_key:
+            ssh_prefix += ["-i", ssh_key]
+        ssh_prefix.append(sandbox_host)
+
+    # Verify docker reachability
+    docker_check_cmd = ssh_prefix + ["docker", "info"]
+    try:
+        subprocess.run(docker_check_cmd, capture_output=True, check=True, timeout=15)
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        host_label = sandbox_host or "localhost"
+        msg = f"Docker not reachable on {host_label}: {exc}"
+        logger.warning(msg)
+        return _not_ready_env("remote/sandbox", msg)
+
+    logger.info(
+        "Sandbox backend: host=%s, image=%s, memory=%s, network=%s, timeout=%ds",
+        sandbox_host or "localhost", image, memory_limit,
+        "disabled" if network_disabled else "enabled", timeout,
+    )
+
+    def execute_fn(code: str, test_code: str = "") -> dict[str, Any]:
+        import subprocess as sp
+
+        full_code = code + ("\n\n" + test_code if test_code else "")
+        docker_cmd = [
+            "docker", "run", "--rm",
+            f"--memory={memory_limit}",
+            *(["--network=none"] if network_disabled else []),
+            image,
+            "python", "-c", full_code,
+        ]
+        if ssh_prefix:
+            # Pass code via stdin to avoid shell metacharacter interpretation
+            # when SSH concatenates remote arguments into a shell string.
+            remote_docker_cmd = " ".join(
+                _shell_quote(arg) for arg in docker_cmd[:-2]  # everything except "python -c CODE"
+            )
+            # Pipe code into python via stdin instead of -c
+            remote_cmd = f"{remote_docker_cmd} python -"
+            cmd = ssh_prefix + [remote_cmd]
+            try:
+                result = sp.run(
+                    cmd, input=full_code, capture_output=True, text=True,
+                    timeout=timeout + 30,
+                )
+                tests_passed, tests_total = _parse_test_output(result.stdout + result.stderr)
+                return {
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit_code": result.returncode,
+                    "tests_passed": tests_passed,
+                    "tests_total": tests_total,
+                }
+            except sp.TimeoutExpired:
+                return _timeout_result(timeout, "Sandbox")
+            except Exception as exc:
+                return _error_result(f"Sandbox execution error: {exc}")
+        else:
+            cmd = docker_cmd
+            try:
+                result = sp.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
+                tests_passed, tests_total = _parse_test_output(result.stdout + result.stderr)
+                return {
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit_code": result.returncode,
+                    "tests_passed": tests_passed,
+                    "tests_total": tests_total,
+                }
+            except sp.TimeoutExpired:
+                return _timeout_result(timeout, "Sandbox")
+            except Exception as exc:
+                return _error_result(f"Sandbox execution error: {exc}")
+
+    return {"env_type": "remote/sandbox", "ready": True, "execute_fn": execute_fn}
+
+
+# -- Shared helpers for remote backends ---------------------------------------
+
+def _shell_quote(s: str) -> str:
+    """Shell-escape a string for safe use in remote SSH commands."""
+    import shlex
+    return shlex.quote(s)
+
+
+def _not_ready_env(env_type: str, error_msg: str) -> dict[str, Any]:
+    """Return a not-ready environment dict with a stub execute_fn."""
+    return {
+        "env_type": env_type,
+        "ready": False,
+        "error": error_msg,
+        "execute_fn": lambda *_args, **_kwargs: {
+            "stdout": "",
+            "stderr": error_msg,
+            "exit_code": -1,
+            "tests_passed": 0,
+            "tests_total": 0,
+        },
+    }
+
+
+def _timeout_result(timeout: int, backend_label: str) -> dict[str, Any]:
+    """Build a standard timeout result dict."""
+    return {
+        "stdout": "",
+        "stderr": f"{backend_label} timeout after {timeout}s",
+        "exit_code": -1,
+        "tests_passed": 0,
+        "tests_total": 0,
+    }
+
+
+def _error_result(error_msg: str) -> dict[str, Any]:
+    """Build a standard error result dict."""
+    return {
+        "stdout": "",
+        "stderr": error_msg,
+        "exit_code": -1,
+        "tests_passed": 0,
+        "tests_total": 0,
+    }
+
+
+def _parse_memory_mb(memory_str: str) -> int:
+    """Convert a memory string like '4g', '512m', '2048' to megabytes."""
+    memory_str = memory_str.strip().lower()
+    if memory_str.endswith("g"):
+        return int(float(memory_str[:-1]) * 1024)
+    if memory_str.endswith("m"):
+        return int(float(memory_str[:-1]))
+    if memory_str.endswith("k"):
+        return max(1, int(float(memory_str[:-1]) / 1024))
+    # Assume megabytes if no suffix
+    try:
+        return int(memory_str)
+    except ValueError:
+        logger.warning("Could not parse memory limit %r, defaulting to 4096MB", memory_str)
+        return 4096
 
 
 def _parse_test_output(output: str) -> tuple[int, int]:
@@ -398,6 +830,6 @@ def _parse_test_output(output: str) -> tuple[int, int]:
         unittest_err = re.search(r"errors=(\d+)", output)
         fails = int(unittest_fail.group(1)) if unittest_fail else 0
         errs = int(unittest_err.group(1)) if unittest_err else 0
-        return total - fails - errs, total
+        return max(0, total - fails - errs), total
 
     return 0, 0

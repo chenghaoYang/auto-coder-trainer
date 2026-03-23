@@ -24,6 +24,10 @@ def main():
     collect_parser.add_argument("--max-papers", type=int, default=20, help="Maximum papers to collect")
     collect_parser.add_argument("--max-repos", type=int, default=10, help="Maximum GitHub repos to collect")
     collect_parser.add_argument("--output", type=str, default="recipes/registry/", help="Output directory")
+    collect_parser.add_argument(
+        "--evidence-threshold", type=float, default=0.3,
+        help="Minimum composite evidence score to keep an atom (default: 0.3)",
+    )
 
     # compose
     compose_parser = subparsers.add_parser("compose", help="Compose method atoms into a training recipe")

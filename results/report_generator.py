@@ -1,6 +1,8 @@
 """Auto-generate technical reports from experiment results."""
 
 import json
+import math
+import random
 import statistics
 from pathlib import Path
 from typing import Any
@@ -743,12 +745,704 @@ class ReportGenerator:
         parts.append("## Reproducibility\n")
         parts.append(self._generate_reproducibility(bundles, all_recipes))
 
+        # === 8a. Statistical Analysis ===
+        stat_section = self._generate_significance_section(bundles)
+        if stat_section:
+            parts.append("## Statistical Analysis\n")
+            parts.append(stat_section)
+
+        # === 8b. Cost-Performance Analysis (Pareto) ===
+        pareto_section = self._generate_pareto_section(bundles)
+        if pareto_section:
+            parts.append("## Cost-Performance Analysis\n")
+            parts.append(pareto_section)
+
+        # === 8c. Failure Analysis ===
+        failure_section = self._generate_failure_section(bundles)
+        if failure_section:
+            parts.append("## Failure Analysis\n")
+            parts.append(failure_section)
+
+        # === 8d. Recommended Next Steps ===
+        next_steps = self._generate_next_steps_section(bundles, all_recipes)
+        if next_steps:
+            parts.append("## Recommended Next Steps\n")
+            parts.append(next_steps)
+
         # === 9. Conclusion ===
         parts.append("## Conclusion\n")
         parts.append(self._generate_conclusion(bundles, all_verdicts))
 
         report = "\n".join(parts)
 
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(report)
+
+        return report
+
+    # ------------------------------------------------------------------
+    # Statistical decision-making methods
+    # ------------------------------------------------------------------
+
+    def _compute_significance(
+        self,
+        values_a: list[float],
+        values_b: list[float],
+        metric_name: str = "metric",
+        alpha: float = 0.05,
+        n_bootstrap: int = 10000,
+    ) -> dict[str, Any]:
+        """Compute statistical significance between two sets of metric values.
+
+        Uses Welch's t-test when sample sizes are >= 3, otherwise falls back
+        to a bootstrap permutation test.  Only stdlib is used (no scipy).
+
+        Returns a dict with keys:
+            metric_name, mean_a, mean_b, delta, p_value,
+            significant (bool), confidence_interval_95
+        """
+        mean_a = statistics.mean(values_a) if values_a else 0.0
+        mean_b = statistics.mean(values_b) if values_b else 0.0
+        delta = mean_b - mean_a
+
+        # --- Welch's t-test (stdlib only) ---
+        def _welch_p(a: list[float], b: list[float]) -> float:
+            n1, n2 = len(a), len(b)
+            if n1 < 2 or n2 < 2:
+                return 1.0
+            m1, m2 = statistics.mean(a), statistics.mean(b)
+            v1, v2 = statistics.variance(a), statistics.variance(b)
+            se = math.sqrt(v1 / n1 + v2 / n2)
+            if se == 0:
+                return 0.0 if m1 != m2 else 1.0
+            t_stat = abs(m2 - m1) / se
+            # Approximate two-tailed p-value using the normal CDF
+            # (good approximation for df > ~5, conservative otherwise)
+            p = 2.0 * (1.0 - _normal_cdf(t_stat))
+            return p
+
+        # --- Bootstrap permutation test ---
+        def _bootstrap_p(a: list[float], b: list[float], n: int) -> float:
+            combined = a + b
+            observed = abs(statistics.mean(b) - statistics.mean(a))
+            na = len(a)
+            rng = random.Random(42)  # reproducible
+            count = 0
+            for _ in range(n):
+                rng.shuffle(combined)
+                perm_a = combined[:na]
+                perm_b = combined[na:]
+                if abs(statistics.mean(perm_b) - statistics.mean(perm_a)) >= observed:
+                    count += 1
+            return count / n
+
+        # Choose method
+        if len(values_a) >= 3 and len(values_b) >= 3:
+            p_value = _welch_p(values_a, values_b)
+        elif values_a and values_b:
+            p_value = _bootstrap_p(values_a, values_b, n_bootstrap)
+        else:
+            p_value = 1.0
+
+        # 95% confidence interval for the difference (bootstrap)
+        ci_low, ci_high = delta, delta
+        if len(values_a) >= 2 and len(values_b) >= 2:
+            rng = random.Random(42)
+            boot_deltas: list[float] = []
+            for _ in range(min(n_bootstrap, 5000)):
+                sa = [rng.choice(values_a) for _ in values_a]
+                sb = [rng.choice(values_b) for _ in values_b]
+                boot_deltas.append(statistics.mean(sb) - statistics.mean(sa))
+            boot_deltas.sort()
+            ci_low = boot_deltas[int(0.025 * len(boot_deltas))]
+            ci_high = boot_deltas[int(0.975 * len(boot_deltas))]
+
+        return {
+            "metric_name": metric_name,
+            "mean_a": mean_a,
+            "mean_b": mean_b,
+            "delta": delta,
+            "p_value": p_value,
+            "significant": p_value < alpha,
+            "confidence_interval_95": (ci_low, ci_high),
+        }
+
+    def _compute_pareto_frontier(
+        self,
+        bundles: list[dict[str, Any]],
+        performance_metric: str | None = None,
+    ) -> dict[str, Any]:
+        """Identify Pareto-optimal experiments on (performance, cost).
+
+        Returns:
+            pareto_ids  – list of experiment IDs on the frontier
+            experiments – full list of {id, performance, cost}
+            description – human-readable text summary
+        """
+        points: list[dict[str, Any]] = []
+
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            exp_id = exp.get("id", "?")
+
+            # --- performance ---
+            rows = self._collect_results_rows(data)
+            perf = None
+            for r in rows:
+                if not isinstance(r["value"], (int, float)):
+                    continue
+                if performance_metric and r["metric"] != performance_metric:
+                    continue
+                if perf is None or r["value"] > perf:
+                    perf = r["value"]
+            if perf is None:
+                # try main metrics
+                m = exp.get("metrics_json")
+                if isinstance(m, str):
+                    try:
+                        m = json.loads(m)
+                    except json.JSONDecodeError:
+                        m = {}
+                if isinstance(m, dict):
+                    for v in m.values():
+                        if isinstance(v, (int, float)):
+                            if perf is None or v > perf:
+                                perf = v
+            if perf is None:
+                continue
+
+            # --- cost ---
+            budget = exp.get("budget_json")
+            if isinstance(budget, str):
+                try:
+                    budget = json.loads(budget)
+                except json.JSONDecodeError:
+                    budget = {}
+            if not isinstance(budget, dict):
+                budget = {}
+            gpu_hours = budget.get("max_gpu_hours", 0)
+            cost_per_hour = (
+                budget.get("max_cost_usd", 0) / gpu_hours
+                if gpu_hours > 0
+                else 0
+            )
+            cost = gpu_hours * cost_per_hour if cost_per_hour > 0 else gpu_hours
+
+            points.append({"id": exp_id, "performance": perf, "cost": cost})
+
+        # Find Pareto frontier: maximize performance, minimize cost
+        # Sort by cost ascending, then filter for non-dominated
+        points.sort(key=lambda p: (p["cost"], -p["performance"]))
+        pareto: list[dict[str, Any]] = []
+        best_perf = -float("inf")
+        for pt in points:
+            if pt["performance"] > best_perf:
+                pareto.append(pt)
+                best_perf = pt["performance"]
+
+        pareto_ids = [p["id"] for p in pareto]
+
+        # Description
+        if not pareto:
+            desc = "No experiments with both performance and cost data available."
+        elif len(pareto) == 1:
+            p = pareto[0]
+            desc = (
+                f"Only one experiment (`{p['id']}`) has cost data. "
+                f"Performance = {p['performance']:.4f}, cost = {p['cost']:.2f}."
+            )
+        else:
+            desc_parts = [f"{len(pareto)} Pareto-optimal experiment(s) identified:"]
+            for p in pareto:
+                desc_parts.append(
+                    f"  - `{p['id']}`: perf={p['performance']:.4f}, cost={p['cost']:.2f}"
+                )
+            desc = "\n".join(desc_parts)
+
+        return {
+            "pareto_ids": pareto_ids,
+            "experiments": points,
+            "description": desc,
+        }
+
+    def _cluster_failure_modes(
+        self, bundles: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Group failed/rejected experiments by failure cause.
+
+        Returns list of clusters, each:
+            {cluster_name, count, common_causes, affected_experiments, suggested_fix}
+        """
+        failures: list[dict[str, Any]] = []
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            exp_id = exp.get("id", "?")
+            status = exp.get("status", "unknown")
+            error = exp.get("error", "")
+
+            # Check verdicts too
+            verdicts = data.get("verdicts", [])
+            rejected = any(v.get("verdict") == "reject" for v in verdicts)
+
+            if status == "failed" or rejected:
+                # Collect causes
+                causes: list[str] = []
+                if error:
+                    causes.append(error)
+                for v in verdicts:
+                    if v.get("verdict") == "reject":
+                        reasoning = v.get("reasoning", "")
+                        if reasoning:
+                            causes.append(reasoning)
+                        checks = v.get("checks_json", {})
+                        if isinstance(checks, dict):
+                            for check_name, passed in checks.items():
+                                if not passed:
+                                    causes.append(f"check_failed:{check_name}")
+
+                failures.append({
+                    "exp_id": exp_id,
+                    "status": status,
+                    "causes": causes,
+                })
+
+        if not failures:
+            return []
+
+        # Cluster by primary cause keyword
+        clusters_map: dict[str, list[dict]] = {}
+        for f in failures:
+            cluster_key = _classify_failure(f["causes"])
+            clusters_map.setdefault(cluster_key, []).append(f)
+
+        fix_suggestions = {
+            "oom": "Reduce batch size, enable gradient checkpointing, or use a smaller model.",
+            "training_failure": "Check data pipeline, learning rate, and gradient norms.",
+            "baseline_regression": "The model performs worse than baseline. Review training data quality and hyperparameters.",
+            "seed_instability": "Results vary too much across seeds. Increase number of seeds or reduce learning rate.",
+            "missing_ablation": "Run the required ablation experiments to meet coverage requirements.",
+            "check_failed": "One or more automated checks failed. See reasoning for details.",
+            "other": "Review experiment logs for details.",
+        }
+
+        clusters: list[dict[str, Any]] = []
+        for name, entries in sorted(clusters_map.items(), key=lambda x: -len(x[1])):
+            all_causes: list[str] = []
+            for e in entries:
+                all_causes.extend(e["causes"])
+            # Deduplicate causes, keep order
+            seen: set[str] = set()
+            unique_causes: list[str] = []
+            for c in all_causes:
+                if c not in seen:
+                    seen.add(c)
+                    unique_causes.append(c)
+
+            clusters.append({
+                "cluster_name": name,
+                "count": len(entries),
+                "common_causes": unique_causes[:5],
+                "affected_experiments": [e["exp_id"] for e in entries],
+                "suggested_fix": fix_suggestions.get(name, fix_suggestions["other"]),
+            })
+
+        return clusters
+
+    def _recommend_next_experiments(
+        self, bundles: list[dict[str, Any]], recipes: list[dict]
+    ) -> list[dict[str, Any]]:
+        """Suggest next experiments based on current results.
+
+        Considers: unexplored ablation space, promising directions, cost efficiency.
+        Returns ranked list of recommendations with description, rationale,
+        estimated_impact, and priority.
+        """
+        recommendations: list[dict[str, Any]] = []
+
+        # --- 1. Unexplored ablation space ---
+        explored_ablations: dict[str, set[str]] = {}  # variable -> set of explored values
+        for data in bundles:
+            for abl in data.get("ablations", []):
+                var = abl.get("variable", "")
+                val = str(abl.get("value", ""))
+                explored_ablations.setdefault(var, set()).add(val)
+
+        for recipe in recipes:
+            for abl_spec in recipe.get("ablation", []):
+                var = abl_spec.get("variable", "")
+                all_values = [str(v) for v in abl_spec.get("values", [])]
+                explored = explored_ablations.get(var, set())
+                missing = [v for v in all_values if v not in explored]
+                if missing:
+                    recommendations.append({
+                        "description": f"Run ablation for `{var}` with values: {', '.join(missing)}",
+                        "rationale": (
+                            f"{len(missing)}/{len(all_values)} ablation values for `{var}` "
+                            f"have not been explored yet."
+                        ),
+                        "estimated_impact": "medium",
+                        "priority": 1,
+                    })
+
+        # --- 2. Promising directions from partial results ---
+        # If some experiments accepted and some rejected, suggest refining rejected ones
+        accepted_ids: list[str] = []
+        rejected_ids: list[str] = []
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            verdicts = data.get("verdicts", [])
+            if any(v.get("verdict") == "accept" for v in verdicts):
+                accepted_ids.append(exp.get("id", "?"))
+            if any(v.get("verdict") == "reject" for v in verdicts):
+                rejected_ids.append(exp.get("id", "?"))
+
+        if accepted_ids and rejected_ids:
+            recommendations.append({
+                "description": "Analyze configuration differences between accepted and rejected experiments",
+                "rationale": (
+                    f"{len(accepted_ids)} accepted vs {len(rejected_ids)} rejected experiments. "
+                    f"Comparing configs may reveal which settings matter most."
+                ),
+                "estimated_impact": "high",
+                "priority": 1,
+            })
+
+        # --- 3. Seed coverage ---
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            eval_runs = data.get("eval_runs", [])
+            seeds_run = {er.get("seed") for er in eval_runs if er.get("seed") is not None}
+            if 0 < len(seeds_run) < 3:
+                recommendations.append({
+                    "description": f"Add more seed runs for experiment `{exp.get('id', '?')}`",
+                    "rationale": (
+                        f"Only {len(seeds_run)} seed(s) evaluated. "
+                        f"At least 3 seeds recommended for reliable significance testing."
+                    ),
+                    "estimated_impact": "medium",
+                    "priority": 2,
+                })
+
+        # --- 4. Cost-efficiency improvements ---
+        pareto = self._compute_pareto_frontier(bundles)
+        non_pareto = [
+            p["id"] for p in pareto.get("experiments", [])
+            if p["id"] not in pareto.get("pareto_ids", [])
+        ]
+        if non_pareto:
+            recommendations.append({
+                "description": "Prune cost-inefficient experiments and reallocate budget",
+                "rationale": (
+                    f"{len(non_pareto)} experiment(s) are dominated on the cost-performance "
+                    f"frontier and could be replaced with more promising configurations."
+                ),
+                "estimated_impact": "medium",
+                "priority": 3,
+            })
+
+        # --- 5. Try different training approaches ---
+        trainers_used = set()
+        for data in bundles:
+            exp = data["experiment"]
+            if exp and exp.get("trainer_type"):
+                trainers_used.add(exp["trainer_type"])
+
+        alternative_trainers = {"sft", "grpo", "dpo", "distill"} - trainers_used
+        if alternative_trainers and bundles:
+            alt = sorted(alternative_trainers)[:2]
+            recommendations.append({
+                "description": f"Try alternative training methods: {', '.join(alt)}",
+                "rationale": (
+                    f"Only {', '.join(sorted(trainers_used))} has been tried. "
+                    f"Different training paradigms may yield better results."
+                ),
+                "estimated_impact": "high",
+                "priority": 2,
+            })
+
+        # Sort by priority then estimated impact
+        impact_order = {"high": 0, "medium": 1, "low": 2}
+        recommendations.sort(
+            key=lambda r: (r["priority"], impact_order.get(r["estimated_impact"], 9))
+        )
+
+        return recommendations
+
+    # ------------------------------------------------------------------
+    # Section generators for statistical decision-making
+    # ------------------------------------------------------------------
+
+    def _generate_significance_section(self, bundles: list[dict]) -> str:
+        """Generate a Statistical Analysis section from cross-seed metrics."""
+        # Collect metric values per experiment, grouped by metric name
+        # Compare first experiment (baseline) against subsequent ones
+        if len(bundles) < 2:
+            # With a single experiment, compare seed-level variance
+            data = bundles[0] if bundles else None
+            if data is None or data["experiment"] is None:
+                return ""
+            rows = self._collect_results_rows(data)
+            metric_seeds: dict[str, list[float]] = {}
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    metric_seeds.setdefault(r["metric"], []).append(float(r["value"]))
+            if not any(len(v) >= 2 for v in metric_seeds.values()):
+                return ""
+            lines = [
+                "With a single experiment, we report seed-level consistency:\n",
+                "| Metric | Mean | Std Dev | CV | Seeds |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            for metric, vals in sorted(metric_seeds.items()):
+                if len(vals) < 2:
+                    continue
+                m = statistics.mean(vals)
+                s = statistics.stdev(vals)
+                cv = s / m if m > 0 else 0.0
+                lines.append(f"| {metric} | {m:.4f} | {s:.4f} | {cv:.4f} | {len(vals)} |")
+            lines.append("")
+            return "\n".join(lines)
+
+        # Multi-experiment: compare first (baseline) vs each subsequent
+        baseline_data = bundles[0]
+        baseline_rows = self._collect_results_rows(baseline_data)
+        baseline_by_metric: dict[str, list[float]] = {}
+        for r in baseline_rows:
+            if isinstance(r["value"], (int, float)):
+                baseline_by_metric.setdefault(r["metric"], []).append(float(r["value"]))
+
+        if not baseline_by_metric:
+            return ""
+
+        lines = [
+            "Significance tests comparing the baseline experiment against each subsequent experiment:\n",
+            "| Experiment | Metric | Baseline Mean | Exp Mean | Delta | p-value | Significant | 95% CI |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+
+        has_rows = False
+        for data in bundles[1:]:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            exp_id = exp.get("id", "?")
+            rows = self._collect_results_rows(data)
+            exp_by_metric: dict[str, list[float]] = {}
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    exp_by_metric.setdefault(r["metric"], []).append(float(r["value"]))
+
+            for metric in sorted(set(baseline_by_metric) & set(exp_by_metric)):
+                sig = self._compute_significance(
+                    baseline_by_metric[metric],
+                    exp_by_metric[metric],
+                    metric_name=metric,
+                )
+                ci = sig["confidence_interval_95"]
+                sig_marker = "Yes" if sig["significant"] else "No"
+                lines.append(
+                    f"| {exp_id} | {metric} | {sig['mean_a']:.4f} | {sig['mean_b']:.4f} | "
+                    f"{sig['delta']:+.4f} | {sig['p_value']:.4f} | {sig_marker} | "
+                    f"[{ci[0]:+.4f}, {ci[1]:+.4f}] |"
+                )
+                has_rows = True
+
+        if not has_rows:
+            return ""
+
+        lines.append("")
+        return "\n".join(lines)
+
+    def _generate_pareto_section(self, bundles: list[dict]) -> str:
+        """Generate a Cost-Performance Analysis section with Pareto frontier."""
+        pareto = self._compute_pareto_frontier(bundles)
+        if not pareto["experiments"]:
+            return ""
+
+        lines = []
+        lines.append(pareto["description"])
+        lines.append("")
+
+        if len(pareto["experiments"]) > 1:
+            lines.append("| Experiment | Performance | Cost | Pareto-Optimal |")
+            lines.append("| --- | --- | --- | --- |")
+            pareto_set = set(pareto["pareto_ids"])
+            for p in sorted(pareto["experiments"], key=lambda x: -x["performance"]):
+                opt = "Yes" if p["id"] in pareto_set else "No"
+                lines.append(
+                    f"| {p['id']} | {p['performance']:.4f} | {p['cost']:.2f} | {opt} |"
+                )
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_failure_section(self, bundles: list[dict]) -> str:
+        """Generate Failure Analysis section from clustered failure modes."""
+        clusters = self._cluster_failure_modes(bundles)
+        if not clusters:
+            return ""
+
+        lines = []
+        total = sum(c["count"] for c in clusters)
+        lines.append(
+            f"{total} failed/rejected experiment(s) grouped into "
+            f"{len(clusters)} failure cluster(s):\n"
+        )
+
+        for cluster in clusters:
+            lines.append(f"### {cluster['cluster_name'].replace('_', ' ').title()}\n")
+            lines.append(f"- **Count**: {cluster['count']}")
+            lines.append(f"- **Affected experiments**: {', '.join(cluster['affected_experiments'])}")
+            if cluster["common_causes"]:
+                lines.append("- **Causes**: " + "; ".join(cluster["common_causes"][:3]))
+            lines.append(f"- **Suggested fix**: {cluster['suggested_fix']}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _generate_next_steps_section(
+        self, bundles: list[dict], recipes: list[dict]
+    ) -> str:
+        """Generate Recommended Next Steps section."""
+        recs = self._recommend_next_experiments(bundles, recipes)
+        if not recs:
+            return ""
+
+        lines = []
+        lines.append("Prioritized recommendations based on current results:\n")
+
+        priority_labels = {1: "HIGH", 2: "MEDIUM", 3: "LOW"}
+        for i, rec in enumerate(recs, 1):
+            plabel = priority_labels.get(rec["priority"], "LOW")
+            lines.append(
+                f"{i}. **[{plabel}]** {rec['description']}"
+            )
+            lines.append(f"   - *Rationale*: {rec['rationale']}")
+            lines.append(f"   - *Estimated impact*: {rec['estimated_impact']}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Decision report (focused, action-oriented)
+    # ------------------------------------------------------------------
+
+    def generate_decision_report(
+        self,
+        experiment_ids: list[str],
+        output_path: str | Path,
+    ) -> str:
+        """Generate a concise decision-oriented report.
+
+        Includes: significance testing, Pareto analysis, failure clustering,
+        and next-experiment recommendations.  More concise and action-oriented
+        than the blog report.
+        """
+        bundles = [self._fetch_experiment_data(exp_id) for exp_id in experiment_ids]
+
+        all_recipes: list[dict] = []
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            recipe_json = exp.get("recipe_json")
+            if isinstance(recipe_json, str):
+                try:
+                    recipe_json = json.loads(recipe_json)
+                except json.JSONDecodeError:
+                    recipe_json = {}
+            all_recipes.append(recipe_json or {})
+
+        parts: list[str] = []
+        parts.append("# Decision Report\n")
+        parts.append(
+            f"Analysis of {len(experiment_ids)} experiment(s) for decision-making.\n"
+        )
+
+        # --- Summary table ---
+        parts.append("## Experiment Summary\n")
+        parts.append("| Experiment | Status | Verdict | Key Metric |")
+        parts.append("| --- | --- | --- | --- |")
+        for data in bundles:
+            exp = data["experiment"]
+            if exp is None:
+                continue
+            exp_id = exp.get("id", "?")
+            status = exp.get("status", "?")
+            verdicts = data.get("verdicts", [])
+            verdict = verdicts[-1].get("verdict", "?") if verdicts else "-"
+            rows = self._collect_results_rows(data)
+            best = None
+            for r in rows:
+                if isinstance(r["value"], (int, float)):
+                    if best is None or r["value"] > best[1]:
+                        best = (r["metric"], r["value"])
+            metric_str = f"{best[0]}={best[1]:.4f}" if best else "-"
+            parts.append(f"| {exp_id} | {status} | {verdict} | {metric_str} |")
+        parts.append("")
+
+        # --- Statistical Significance ---
+        sig_section = self._generate_significance_section(bundles)
+        if sig_section:
+            parts.append("## Statistical Significance\n")
+            parts.append(sig_section)
+
+        # --- Pareto Analysis ---
+        pareto_section = self._generate_pareto_section(bundles)
+        if pareto_section:
+            parts.append("## Cost-Performance Frontier\n")
+            parts.append(pareto_section)
+
+        # --- Failure Analysis ---
+        failure_section = self._generate_failure_section(bundles)
+        if failure_section:
+            parts.append("## Failure Modes\n")
+            parts.append(failure_section)
+
+        # --- Recommendations ---
+        recs = self._recommend_next_experiments(bundles, all_recipes)
+        if recs:
+            parts.append("## Action Items\n")
+            priority_labels = {1: "HIGH", 2: "MEDIUM", 3: "LOW"}
+            for i, rec in enumerate(recs, 1):
+                plabel = priority_labels.get(rec["priority"], "LOW")
+                parts.append(f"{i}. **[{plabel}]** {rec['description']}")
+                parts.append(f"   - {rec['rationale']}")
+                parts.append("")
+
+        # --- Go/No-Go ---
+        parts.append("## Decision\n")
+        total = len(bundles)
+        accepted = sum(
+            1 for d in bundles
+            if d.get("verdicts") and d["verdicts"][-1].get("verdict") == "accept"
+        )
+        if accepted == total and total > 0:
+            parts.append(
+                "**GO** — All experiments passed quality checks. "
+                "Results are ready for deployment or next-stage iteration.\n"
+            )
+        elif accepted == 0 and total > 0:
+            parts.append(
+                "**NO-GO** — No experiments passed quality checks. "
+                "Address failure modes above before proceeding.\n"
+            )
+        else:
+            parts.append(
+                f"**CONDITIONAL** — {accepted}/{total} experiments passed. "
+                f"Proceed with accepted configurations and address failures.\n"
+            )
+
+        report = "\n".join(parts)
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(report)
@@ -1304,11 +1998,14 @@ class ReportGenerator:
             return "No experiments to conclude on.\n"
 
         total = len(bundles)
+        # Count per-experiment latest verdict (consistent with decision report)
         accepted = sum(
-            1 for v in verdicts if v.get("verdict") == "accept"
+            1 for d in bundles
+            if d.get("verdicts") and d["verdicts"][-1].get("verdict") == "accept"
         )
         rejected = sum(
-            1 for v in verdicts if v.get("verdict") == "reject"
+            1 for d in bundles
+            if d.get("verdicts") and d["verdicts"][-1].get("verdict") == "reject"
         )
 
         best_metrics: dict[str, tuple[float, str]] = {}
@@ -1401,6 +2098,48 @@ class ReportGenerator:
                     std = statistics.stdev(values)
                     result[metric] = std / mean  # CV
         return result
+
+
+def _normal_cdf(x: float) -> float:
+    """Approximate the standard normal CDF using the Abramowitz & Stegun formula."""
+    # Handle edge cases
+    if x > 8:
+        return 1.0
+    if x < -8:
+        return 0.0
+    sign = 1 if x >= 0 else -1
+    x = abs(x)
+    t = 1.0 / (1.0 + 0.2316419 * x)
+    d = 0.3989422804014327  # 1/sqrt(2*pi)
+    poly = (
+        0.319381530 * t
+        - 0.356563782 * t ** 2
+        + 1.781477937 * t ** 3
+        - 1.821255978 * t ** 4
+        + 1.330274429 * t ** 5
+    )
+    cdf = 1.0 - d * math.exp(-x * x / 2.0) * poly
+    if sign < 0:
+        cdf = 1.0 - cdf
+    return cdf
+
+
+def _classify_failure(causes: list[str]) -> str:
+    """Classify a list of failure causes into a cluster name."""
+    text = " ".join(causes).lower()
+    if "oom" in text or "out of memory" in text or "cuda" in text:
+        return "oom"
+    if "baseline" in text:
+        return "baseline_regression"
+    if "seed" in text or "variance" in text or "unstable" in text:
+        return "seed_instability"
+    if "ablation" in text:
+        return "missing_ablation"
+    if "check_failed" in text:
+        return "check_failed"
+    if "failed" in text or "error" in text or "nan" in text:
+        return "training_failure"
+    return "other"
 
 
 def _latex_escape(text: str) -> str:

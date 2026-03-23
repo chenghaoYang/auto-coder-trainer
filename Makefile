@@ -1,4 +1,4 @@
-.PHONY: collect compose train report status install dev test clean help validate-schema
+.PHONY: collect compose train report status install dev test clean help validate-schema benchmark-quick benchmark-standard benchmark-full result-card
 
 PYTHON ?= python3
 
@@ -34,6 +34,18 @@ test: ## Run tests
 
 validate-schema: ## Validate example recipes against schema
 	$(PYTHON) -c "import json, jsonschema; s=json.load(open('recipes/schema/recipe.schema.json')); r=json.load(open('recipes/examples/baseline-sft.recipe.json')); jsonschema.validate(r, s); print('OK')"
+
+benchmark-quick: ## Run quick validation benchmark (dry-run, ~1 min)
+	$(PYTHON) -m benchmarks.suite --suite quick --dry-run --output-dir outputs/benchmarks
+
+benchmark-standard: ## Run standard benchmark suite (SFT baseline)
+	$(PYTHON) -m benchmarks.suite --suite standard --output-dir outputs/benchmarks $(if $(GPU_TYPE),--gpu-type "$(GPU_TYPE)",)
+
+benchmark-full: ## Run full benchmark suite (SFT + RL + distill)
+	$(PYTHON) -m benchmarks.suite --suite full --output-dir outputs/benchmarks $(if $(GPU_TYPE),--gpu-type "$(GPU_TYPE)",)
+
+result-card: ## Generate result card from experiment (usage: make result-card EXP_ID=exp_001)
+	$(PYTHON) -c "from benchmarks.result_card import generate_result_card, render_result_card_markdown; from results.db import ResultDB; db = ResultDB(); db.connect(); card = generate_result_card('$(EXP_ID)', db); print(render_result_card_markdown(card)); db.close()"
 
 clean: ## Clean build artifacts
 	rm -rf build/ dist/ *.egg-info __pycache__ .pytest_cache

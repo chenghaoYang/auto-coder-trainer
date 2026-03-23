@@ -159,11 +159,34 @@ def _run_rerun(recipe_id: str, *, dry_run: bool = False) -> None:
 # Decision logic
 # ---------------------------------------------------------------------------
 
-_TERMINAL_VERDICTS = {"accept", "reject"}
+def _has_research_suggestions(verdict: dict[str, Any] | None) -> bool:
+    """Check whether the verdict carries actionable research suggestions."""
+    if verdict is None:
+        return False
+    suggestions = verdict.get("research_suggestions", [])
+    if not isinstance(suggestions, list):
+        return False
+    for entry in suggestions:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "research_queries" and entry.get("trigger_collection"):
+            return True
+    return False
+
+
+def _extract_research_queries(verdict: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull the query dicts out of research_suggestions."""
+    queries: list[dict[str, Any]] = []
+    for entry in verdict.get("research_suggestions", []):
+        if isinstance(entry, dict) and entry.get("type") == "research_queries":
+            queries.extend(entry.get("queries", []))
+    return queries
 
 
 def _decide_next_action(verdict: dict[str, Any] | None) -> str:
-    """Return one of: 'report', 'rerun', 'ablation', 'stop', 'report_and_stop'."""
+    """Return one of: 'report', 'rerun', 'ablation', 'research_and_retry',
+    'stop', 'report_and_stop'.
+    """
     if verdict is None:
         return "report_and_stop"
 
@@ -171,10 +194,14 @@ def _decide_next_action(verdict: dict[str, Any] | None) -> str:
     if v == "accept":
         return "report"
     elif v == "needs_rerun":
+        if _has_research_suggestions(verdict):
+            return "research_and_retry"
         return "rerun"
     elif v == "needs_ablation":
         return "ablation"
     elif v == "reject":
+        if _has_research_suggestions(verdict):
+            return "research_and_retry"
         return "report_and_stop"
     return "report_and_stop"
 
@@ -289,6 +316,56 @@ def run_pipeline(args: argparse.Namespace) -> None:
             _run_rerun(recipe_id, dry_run=dry_run)
             # Continue to next iteration
 
+        elif action == "research_and_retry":
+            print(f"\n[pipeline] {'='*60}")
+            print(f"[pipeline] === RESEARCH & RETRY (feedback-driven collection) ===")
+            print(f"[pipeline] {'='*60}")
+
+            research_queries = _extract_research_queries(verdict) if verdict else []
+            if research_queries:
+                # Sort by priority (lower number = higher priority)
+                research_queries.sort(key=lambda q: q.get("priority", 99))
+                for rq in research_queries:
+                    print(f"[pipeline]   query: {rq.get('query', '')} "
+                          f"(priority={rq.get('priority', '?')}, "
+                          f"category={rq.get('target_category', '?')})")
+
+                # Phase A: Run collect with suggested queries
+                combined_query = " OR ".join(
+                    rq["query"] for rq in research_queries if rq.get("query")
+                )
+                print(f"\n[pipeline] Collecting research for: {combined_query[:120]}...")
+                registry_path = _run_collect(combined_query, output_dir)
+
+                if registry_path.exists():
+                    # Phase B: Compose new recipe variants from fresh atoms
+                    registry = json.loads(registry_path.read_text())
+                    all_atoms = [a["name"] for a in registry.get("atoms", [])]
+                    atom_names = ",".join(all_atoms) if all_atoms else ""
+
+                    if atom_names:
+                        print(f"[pipeline] Composing new recipe from atoms: {atom_names}")
+                        recipe_path = _run_compose(
+                            atom_names, model, registry_path, output_dir,
+                        )
+                        if recipe_path.exists():
+                            recipe = json.loads(recipe_path.read_text())
+                            recipe_id = recipe.get("id", recipe_id)
+                            print(f"[pipeline] New recipe composed: {recipe_id}")
+                        else:
+                            print("[pipeline] Warning: compose produced no recipe, "
+                                  "continuing with existing recipe")
+                    else:
+                        print("[pipeline] Warning: no new atoms collected, "
+                              "continuing with existing recipe")
+                else:
+                    print("[pipeline] Warning: collect produced no registry, "
+                          "continuing with existing recipe")
+            else:
+                print("[pipeline] No research queries available, falling back to rerun")
+                _run_rerun(recipe_id, dry_run=dry_run)
+            # Continue to next iteration (Phase C: train loop continues)
+
         elif action == "ablation":
             print(f"\n[pipeline] {'='*60}")
             print(f"[pipeline] === ABLATION (running missing variants) ===")
@@ -317,6 +394,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Max iterations reached
     # ------------------------------------------------------------------
+    experiment_id = locals().get("experiment_id")  # safe if loop never ran
     print(f"\n[pipeline] {'='*60}")
     print(f"[pipeline] Max iterations ({max_iterations}) reached. Generating final report.")
     print(f"[pipeline] {'='*60}")

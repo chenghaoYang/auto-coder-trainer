@@ -34,6 +34,7 @@ class JudgementResult:
     reasoning: str
     checks: dict[str, bool] = field(default_factory=dict)
     suggestions: list[str] = field(default_factory=list)
+    research_suggestions: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -419,10 +420,37 @@ class ExperimentJudge:
 
         reasoning = ". ".join(reasoning_parts) if reasoning_parts else "All checks passed"
 
-        return JudgementResult(
+        result = JudgementResult(
             verdict=verdict,
             recipe_id=recipe_id,
             reasoning=reasoning,
             checks=checks,
             suggestions=suggestions,
         )
+
+        # Generate research feedback for actionable verdicts
+        if verdict in (Verdict.REJECT, Verdict.NEEDS_RERUN):
+            from judge.research_feedback import ResearchFeedback
+
+            feedback = ResearchFeedback()
+            research_queries = feedback.suggest_research_queries(
+                result, recipe_payload,
+            )
+            recipe_mods = feedback.suggest_recipe_modifications(
+                result, recipe_payload,
+            )
+            trigger_collect = feedback.should_trigger_new_collection(result)
+
+            result.research_suggestions = [
+                {
+                    "type": "research_queries",
+                    "queries": research_queries,
+                    "trigger_collection": trigger_collect,
+                },
+                {
+                    "type": "recipe_modifications",
+                    "modifications": recipe_mods,
+                },
+            ]
+
+        return result
