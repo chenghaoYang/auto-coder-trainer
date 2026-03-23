@@ -2,46 +2,41 @@
 
 **Research Operating System for Coding Agent Training**
 
-> From papers to trained models in a closed loop: automatically collect research, compose training recipes, run experiments, and generate reports.
+> From papers to trained models in a closed loop — automatically collect research,
+> compose training recipes, run experiments, and generate publication-ready reports.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│   │ Collect  │───▶│ Compose  │───▶│  Train   │───▶│  Report  │  │
-│   │          │    │          │    │          │    │          │  │
-│   │ papers   │    │ recipe   │    │ SFT / RL │    │ analysis │  │
-│   │ methods  │    │   IR     │    │  (veRL)  │    │ verdicts │  │
-│   └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
-│        ▲                                               │        │
-│        └───────────────────────────────────────────────┘        │
-│                     feedback loop                               │
-└─────────────────────────────────────────────────────────────────┘
+         collect           compose            train             report
+      ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+      │  arXiv   │────▶│  Recipe  │────▶│ SFT / RL │────▶│  Blog /  │
+      │  GitHub  │     │   IR     │     │ Distill  │     │  LaTeX   │
+      └──────────┘     └──────────┘     └──────────┘     └──────────┘
+           ▲                                                   │
+           └────────────── judge verdict ──────────────────────┘
+                          feedback loop
 ```
 
-## Architecture
+---
 
-```
-┌───────────────────────────────────────────────┐
-│          ARIS Research Plane (aris/)           │
-│  skills · mcp-servers · tools · docs          │
-│  75+ skills for research, review, paper writing│
-└──────────────────┬────────────────────────────┘
-                   │ method cards
-          ┌────────▼────────┐
-          │   Recipe IR     │
-          │  (recipes/)     │
-          │  JSON schema    │
-          └────────┬────────┘
-                   │ compiled config
-┌──────────────────▼────────────────────────────┐
-│          Training Plane                        │
-│  tinyzero launcher · trainers/sft · trainers/rl│
-│  evaluators/ · judge/ · results/              │
-└───────────────────────────────────────────────┘
-```
+## Table of Contents
 
-**Two planes, one IR.** The [ARIS Research Plane](aris/README.md) handles paper collection, idea generation, novelty checking, and research orchestration. The Training Plane handles experiment execution, evaluation, and result accumulation. The **Recipe IR** — a structured JSON schema — connects them.
+- [Quick Start](#quick-start)
+- [One-Command Pipeline](#one-command-pipeline)
+- [Architecture](#architecture)
+- [CLI Reference](#cli-reference)
+- [Recipe IR](#recipe-ir)
+- [Training Backends](#training-backends)
+- [Experiment Judge](#experiment-judge)
+- [Blog-Style Reports](#blog-style-reports)
+- [Recovery & State](#recovery--state)
+- [ARIS Research Plane](#aris-research-plane)
+- [Prompt Caching](#prompt-caching)
+- [Project Structure](#project-structure)
+- [Development](#development)
+- [Status](#status)
+- [License](#license)
+
+---
 
 ## Quick Start
 
@@ -49,59 +44,101 @@
 # Install
 git clone https://github.com/chenghaoYang/auto-coder-trainer.git
 cd auto-coder-trainer
-python3 -m pip install -e ".[all,dev]"
+pip install -e ".[all,dev]"
 
-# Five entry points
-act collect "coding agent training"               # Online discovery (arXiv + GitHub) → registry
-act compose --atoms swe-fuse,entropy-rl           # Compose → schema-clean recipe
-act train recipes/examples/baseline-sft.recipe.json  # Native train or TinyZero launch bundle
-act train recipes/examples/trajectory-distill.recipe.json  # Teacher-trajectory distillation
-act report --recipe-id recipe-baseline-sft-001    # Report → comparison / verdicts / ablations (also: --experiment-id)
-act status --open-only                            # Recovery view: experiments, artifacts, pending tasks
+# Run the full pipeline in one command
+act pipeline --query "coding agent training" --report-format blog
+
+# Or step by step
+act collect "coding agent training"
+act compose --atoms swe-fuse,entropy-rl
+act train recipes/examples/baseline-sft.recipe.json
+act report --recipe-id recipe-baseline-sft-001 --format blog
 ```
 
-Or use `make`:
+---
+
+## One-Command Pipeline
+
+The `act pipeline` command orchestrates the **entire agent team** as a closed loop:
 
 ```bash
-make dev
-make collect QUERY="coding agent training"
-make compose ATOMS="swe-fuse,entropy-rl"
-make train RECIPE=recipes/examples/baseline-sft.recipe.json
-make report EXP_ID=exp_001
-make status RECIPE_ID=recipe-baseline-sft-001
+# Full pipeline: collect → compose → train → judge → report
+act pipeline --query "coding agent training" --report-format blog
+
+# Start from an existing recipe (skip collect/compose)
+act pipeline --recipe recipes/examples/baseline-sft.recipe.json
+
+# Control iteration depth and output
+act pipeline --recipe recipe.json --max-iterations 5 --report-dir reports/
+
+# Validate without training
+act pipeline --recipe recipe.json --dry-run
 ```
 
-Or use Claude Code skills:
+**Automatic decision logic** after each judge verdict:
 
-```bash
-claude
-> /collect "coding agent trajectory training"
-> /compose swe-fuse + entropy-rl
-> /train recipes/examples/trajectory-rl.recipe.json
-> /report exp_001
+| Verdict | Action |
+| --- | --- |
+| `accept` | Generate final blog report, done |
+| `needs_rerun` | Re-run missing seeds or full experiment, loop |
+| `needs_ablation` | Run ablation variants, loop |
+| `reject` | Generate report with failure analysis, stop |
+
+The pipeline iterates up to `--max-iterations` (default 3), then generates a final report regardless.
+
+---
+
+## Architecture
+
+```
+┌───────────────────────────────────────────────────┐
+│           ARIS Research Plane  (aris/)             │
+│   75+ skills  ·  4 MCP servers  ·  arXiv tools    │
+└────────────────────┬──────────────────────────────┘
+                     │ method atoms
+              ┌──────▼──────┐
+              │  Recipe IR  │  ← JSON Schema (Draft 2020-12)
+              │ (recipes/)  │
+              └──────┬──────┘
+                     │ compiled config
+┌────────────────────▼──────────────────────────────┐
+│           Training Plane                           │
+│   trainers/ · evaluators/ · judge/ · results/      │
+│   7 backends · 2 evaluators · 5 judge checks       │
+└───────────────────────────────────────────────────┘
 ```
 
-`collect` supports both offline import mode (`method_atoms.json` / JSONL / inline JSON) and automated discovery mode via arXiv + GitHub search. `train` now supports three native post-training tracks: SFT, RL/GRPO, and trajectory distillation. Distillation is designed for coding-agent teacher traces: it runs positive teacher-trajectory SFT first, then can optionally refine with TRL DPO on chosen-vs-rejected traces. For stronger upstream alignment, the same control plane can also generate launch bundles for `openr1`, `agent_distill`, and `redi`. Every `train` invocation persists experiment state, evaluation rows, artifacts, and a task ledger so the next agent can resume from the current checkpoint instead of re-auditing the repo.
+**Two planes, one IR.** The ARIS Research Plane handles paper collection, idea generation, and research orchestration. The Training Plane handles experiment execution, evaluation, and result persistence. The **Recipe IR** — a structured JSON schema — bridges them.
 
-## Recovery And State
+---
 
-The project now keeps resumable state in two places:
+## CLI Reference
 
-- `data/results.db`: experiments, eval runs, verdicts, artifacts, and tracked tasks
-- `outputs/<recipe-id>/task-ledger.{json,md}`: a human/agent-readable snapshot of what finished and what is still open for that recipe
+| Command | Description | Example |
+| --- | --- | --- |
+| `act pipeline` | Full closed-loop pipeline | `act pipeline --query "RL for code" --report-format blog` |
+| `act collect` | Discover papers & repos → method atoms | `act collect "coding agent training"` |
+| `act compose` | Assemble atoms → Recipe IR JSON | `act compose --atoms swe-fuse,entropy-rl` |
+| `act train` | Execute experiment from recipe | `act train recipe.json` |
+| `act report` | Generate report (blog / markdown / latex) | `act report --recipe-id R --format blog` |
+| `act status` | Show experiments & open tasks | `act status --open-only` |
+| `act rerun` | Auto-dispatch pending judge tasks | `act rerun --recipe-id R` |
 
-Useful commands:
+**Claude Code skills** (equivalent):
 
-```bash
-act status --open-only
-act status --recipe-id recipe-baseline-sft-001 --output outputs/status.md
+```
+/collect "coding agent trajectory training"
+/compose swe-fuse + entropy-rl
+/train recipes/examples/trajectory-rl.recipe.json
+/report exp_001
 ```
 
-If you want a separate DB while testing, set `ACT_RESULTS_DB=/path/to/results.db`.
+---
 
 ## Recipe IR
 
-Every experiment is defined by a **Recipe IR** — a structured JSON file that captures all dimensions of a training experiment:
+Every experiment is defined by a **Recipe IR** — a structured JSON validated against [`recipe.schema.json`](recipes/schema/recipe.schema.json):
 
 ```jsonc
 {
@@ -113,19 +150,24 @@ Every experiment is defined by a **Recipe IR** — a structured JSON file that c
     "filters": [{ "type": "issue_free" }, { "type": "length", "params": { "max_turns": 30 } }]
   },
   "trainer": {
-    "type": "grpo",
-    "backend": "tinyzero",       // TinyZero/veRL-compatible baseline launcher
+    "type": "grpo",                       // sft | rl | grpo | distill | dpo
+    "backend": "tinyzero",                // trl | verl | tinyzero | openr1 | agent_distill | redi
     "reward": { "type": "entropy_aware" }
   },
-  "eval": { "benchmarks": ["swe-bench-verified"], "seeds": [42, 123, 456] },
-  "ablation": [{ "name": "reward_type", "variable": "trainer.reward.type", "values": ["binary_pass", "entropy_aware"] }],
+  "eval": {
+    "benchmarks": ["swe-bench-verified"],
+    "seeds": [42, 123, 456]
+  },
+  "ablation": [{
+    "name": "reward_type",
+    "variable": "trainer.reward.type",
+    "values": ["binary_pass", "entropy_aware"]
+  }],
   "budget": { "max_gpu_hours": 48, "gpu_type": "A100-80GB" }
 }
 ```
 
-See [`recipes/schema/recipe.schema.json`](recipes/schema/recipe.schema.json) for the full schema and [`recipes/examples/`](recipes/examples/) for example recipes.
-
-Distillation recipes add an optional `distill` block:
+**Distillation recipes** add an optional `distill` block for teacher-trajectory training:
 
 ```jsonc
 {
@@ -133,110 +175,126 @@ Distillation recipes add an optional `distill` block:
   "distill": {
     "strategy": "trajectory",
     "teacher_model": "Qwen/Qwen2.5-Coder-32B-Instruct",
-    "teacher_mode": "offline_dataset",
     "stages": ["positive_sft", "pairwise_refine"],
     "refine_algorithm": "dpo",
-    "pairwise_beta": 0.1,
     "condense": { "strategy": "edge_preserving", "max_chars": 12000 }
   }
 }
 ```
 
+See [`recipes/examples/`](recipes/examples/) for complete examples covering SFT, RL/GRPO, and distillation.
+
+---
+
+## Training Backends
+
+| Backend | Type | Used For | Framework |
+| --- | --- | --- | --- |
+| **TRL** | Native | SFT, distillation, DPO refinement | [huggingface/trl](https://github.com/huggingface/trl) |
+| **veRL** | Native | RL, GRPO, PPO | [volcengine/verl](https://github.com/volcengine/verl) |
+| **TinyZero** | Launcher | Baseline SFT & RL launch bundles | [Jiayi-Pan/TinyZero](https://github.com/Jiayi-Pan/TinyZero) |
+| **Open-R1** | Launcher | Reasoning recipe launcher | [huggingface/open-r1](https://github.com/huggingface/open-r1) |
+| **Agent Distillation** | Launcher | Teacher-agent trajectory distillation | [Nardien/agent-distillation](https://github.com/Nardien/agent-distillation) |
+| **REDI** | Launcher | Negative-signal reinforcement distillation | [Tim-Siu/reinforcement-distillation](https://github.com/Tim-Siu/reinforcement-distillation) |
+
+**Native** trainers run directly. **Launcher** backends generate Hydra configs + shell scripts for external execution. See [UPSTREAM_INTEGRATION.md](UPSTREAM_INTEGRATION.md) for the upstream-first integration policy.
+
+---
+
 ## Experiment Judge
 
-Every experiment passes through the **Experiment Judge** before results are accepted:
+Every experiment passes through an automated judge before results are accepted:
 
-| Check | What it does |
-|-------|-------------|
-| Baseline alignment | Verifies a baseline run exists for comparison |
-| Seed consistency | Confirms all specified seeds were evaluated |
-| Minimal ablation | Ensures ablation experiments cover recipe variables |
-| Deduplication | Prevents redundant experiments |
-| Failure attribution | Analyzes underperforming experiments |
+| Check | Description |
+| --- | --- |
+| Baseline alignment | Verifies a baseline run exists; allows 5% regression tolerance |
+| Seed consistency | Confirms all seeds evaluated; coefficient of variation < 10% |
+| Ablation coverage | Ensures ablation experiments cover all recipe variables |
+| Deduplication | Prevents redundant experiments via config hash matching |
+| Failure attribution | Analyzes and explains underperforming experiments |
 
-Verdicts: `accept` · `reject` · `needs_ablation` · `needs_rerun`
+**Verdicts**: `accept` · `reject` · `needs_ablation` · `needs_rerun`
 
-## Project Structure
+When used with `act pipeline`, verdicts automatically drive the next action — no manual intervention needed.
 
+---
+
+## Blog-Style Reports
+
+Reports can be generated in three formats: `markdown`, `latex`, and `blog`.
+
+The **blog** format follows the structure of Sebastian Raschka's [LoRA Insights](https://lightning.ai/blog/lora-insights) — an experiment diary style optimized for readability:
+
+```bash
+act report --recipe-id recipe-001 --format blog
 ```
-auto-coder-trainer/
-├── aris/                 # Research Plane — ARIS agent scaffold
-│   ├── skills/           #   75+ Claude Code / Codex skills
-│   ├── mcp-servers/      #   4 MCP servers (review, LLM chat, Feishu)
-│   ├── tools/            #   arXiv fetcher, utilities
-│   └── docs/             #   Guides and examples
-├── recipes/              # Recipe IR layer
-│   ├── schema/           #   JSON Schema definition
-│   ├── registry/         #   Method atom registry
-│   ├── examples/         #   Example recipes
-│   └── compiler.py       #   Recipe → training config compiler
-├── trainers/             # Training Plane
-│   ├── tinyzero/         #   TinyZero/veRL-compatible launch bundle compiler
-│   ├── sft/              #   Native SFT trainer (TRL backend)
-│   ├── rl/               #   Native RL trainer (veRL backend)
-│   ├── distill/          #   Native distillation trainer (trajectory SFT + DPO refinement)
-│   ├── upstream/         #   External upstream launcher bundles (Open-R1, Agent Distillation, REDI)
-│   └── utils/            #   Seeds, checkpoints
-├── evaluators/           # Evaluation harness
-│   ├── swe_bench.py      #   SWE-bench evaluator
-│   └── pass_at_k.py      #   pass@k metrics
-├── judge/                # Experiment judge
-│   ├── judge.py          #   Core arbiter
-│   ├── baseline.py       #   Baseline alignment
-│   ├── ablation.py       #   Ablation validation
-│   └── attribution.py    #   Failure analysis
-├── results/              # Result database + ledgers
-│   ├── db.py             #   SQLite-backed storage
-│   ├── ledger.py         #   Task ledger writer for recovery
-│   └── report_generator.py  # Auto report generation
-├── prompt_cache/          # Prompt caching infrastructure
-│   ├── builder.py        #   Cache-safe prompt construction
-│   ├── monitor.py        #   Hit rate monitoring & alerts
-│   ├── compaction.py     #   Cache-safe context compression
-│   └── rules.py          #   Codified cache safety rules
-├── cli/                  # CLI entry points
-│   ├── main.py           #   `act` command
-│   └── rerun.py          #   Auto-dispatch for upstream reruns (being added)
-└── skills/               # Top-level skills for Claude Code
-    ├── collect/           #   /collect
-    ├── compose/           #   /compose
-    ├── train/             #   /train
-    └── report/            #   /report
+
+**Report structure**:
+
+| Section | Content |
+| --- | --- |
+| **TL;DR** | Key takeaways, best metrics, seed stability summary |
+| **Introduction** | Motivation, method description, source papers |
+| **Experimental Setup** | Model, dataset, hyperparameters, hardware, evaluation config |
+| **Experiments** | Sequential diary — each run with question, setup, results table, judge verdict, key finding |
+| **Ablation Studies** | Per-variable comparison tables with best setting highlighted |
+| **Cost & Efficiency** | GPU budget, performance-per-GPU-hour analysis |
+| **Practical Recommendations** | Synthesized from judge suggestions, ablation results, seed stability |
+| **Reproducibility** | Commands to re-run, config hashes, seed list |
+| **Conclusion** | Accept/reject summary, best results, next steps |
+
+---
+
+## Recovery & State
+
+The project maintains resumable state so agents can pick up where they left off:
+
+| Store | Location | Purpose |
+| --- | --- | --- |
+| Result DB | `data/results.db` | Experiments, eval runs, verdicts, artifacts, tasks (SQLite, WAL mode) |
+| Task ledger | `outputs/<recipe-id>/task-ledger.{json,md}` | Human/agent-readable snapshot of completed and pending work |
+| Execution plan | `outputs/<recipe-id>/execution-plan.{json,md}` | Next steps for blocked or prepared experiments |
+
+```bash
+act status --open-only                                    # What's pending?
+act status --recipe-id recipe-001 --output status.md      # Save status report
+act rerun --recipe-id recipe-001                          # Auto-dispatch pending tasks
 ```
+
+Override the DB path for testing: `ACT_RESULTS_DB=/path/to/test.db`
+
+---
 
 ## ARIS Research Plane
 
-The [ARIS (Auto-Research-In-Sleep)](aris/README.md) subsystem provides 75+ Claude Code skills for autonomous ML research:
+The [ARIS (Auto-Research-In-Sleep)](aris/README.md) subsystem provides **75+ Claude Code skills** for autonomous ML research:
 
-- **Research**: `/research-lit`, `/arxiv`, `/idea-discovery`, `/novelty-check`
-- **Experimentation**: `/experiment-plan`, `/experiment-bridge`, `/run-experiment`
-- **Writing**: `/paper-write`, `/paper-figure`, `/paper-slides`, `/paper-poster`
-- **Review**: `/auto-review-loop`, `/research-review`, cross-model review
-- **Pipeline**: `/research-pipeline` — end-to-end from idea to paper
+| Category | Skills |
+| --- | --- |
+| **Research** | `/research-lit`, `/arxiv`, `/idea-discovery`, `/novelty-check` |
+| **Experiment** | `/experiment-plan`, `/experiment-bridge`, `/run-experiment` |
+| **Writing** | `/paper-write`, `/paper-figure`, `/paper-slides`, `/paper-poster` |
+| **Review** | `/auto-review-loop`, `/research-review`, cross-model review |
+| **Pipeline** | `/research-pipeline` — end-to-end from idea to paper |
+
+Plus **4 MCP servers**: claude-review, feishu-bridge, llm-chat, minimax-chat.
 
 See the [ARIS README](aris/README.md) for full documentation.
 
+---
+
 ## Prompt Caching
 
-"Cache Rules Everything Around Me." The `prompt_cache/` module implements cache-safe prompt construction for long-running agent sessions, based on Anthropic's prefix-matching cache architecture.
+The `prompt_cache/` module implements cache-safe prompt construction for long-running agent sessions, based on Anthropic's prefix-matching cache architecture.
 
-**Core principle**: The API caches from the start of each request to each `cache_control` breakpoint. Prompt order and stability determine cache hit rate.
+| Layer | Content | Stability |
+| --- | --- | --- |
+| 0 | System prompt + tool definitions | Frozen at session start |
+| 1 | Project context (CLAUDE.md) | Frozen per project |
+| 2 | Session context (task, plan) | Append-only within session |
+| 3 | Conversation messages | Dynamic, not cached |
 
-| Layer | Content | Stability | Cache Scope |
-|-------|---------|-----------|-------------|
-| 0 | System prompt + tool definitions | Frozen at session start | Cross-session |
-| 1 | Project context (CLAUDE.md) | Frozen per project | Cross-session |
-| 2 | Session context (task, plan) | Append-only | Within session |
-| 3 | Conversation messages | Dynamic | Not cached |
-
-**Six rules enforced by `prompt_cache/rules.py`**:
-
-1. **Static prefix ordering** — static content before dynamic content
-2. **Messages for updates** — use `<system-reminder>` in messages, never modify system prompt
-3. **Tool set stability** — never add/remove tools mid-session; use deferred loading
-4. **Model consistency** — never switch models mid-session (cache is model-bound)
-5. **State via tools** — model state changes (Plan Mode) via tool calls, not toolset changes
-6. **Compaction prefix sharing** — context compression reuses parent's exact prefix
+**Six rules** (enforced by `prompt_cache/rules.py`): static prefix ordering, messages for updates, tool set stability, model consistency, state via tools, compaction prefix sharing.
 
 ```python
 from prompt_cache import PromptBuilder, CacheMonitor
@@ -246,67 +304,136 @@ builder.set_system_prompt("You are a coding agent...")
 builder.set_tools([...])                    # Set once, frozen
 builder.add_project_context(claude_md)       # Layer 1
 builder.add_session_context("Task: ...")     # Layer 2
-builder.inject_dynamic_update("Time: now")   # Via message, not system prompt
 
 monitor = CacheMonitor(alert_threshold=0.8)
-# After API call:
 monitor.record(response.usage)
 if not monitor.is_healthy():
     print(monitor.diagnose_cache_miss())
 ```
 
-## Training Backends
+---
 
-| Backend | Used for | Framework |
-|---------|----------|-----------|
-| **TinyZero** | Baseline SFT / RL launch bundles | [Jiayi-Pan/TinyZero](https://github.com/Jiayi-Pan/TinyZero) |
-| **veRL** | RL / GRPO / PPO | [volcengine/verl](https://github.com/volcengine/verl) |
-| **TRL** | SFT / native trajectory distillation / DPO refinement | [huggingface/trl](https://github.com/huggingface/trl) |
-| **Open-R1** | External reasoning / distillation recipe launcher | [huggingface/open-r1](https://github.com/huggingface/open-r1) |
-| **Agent Distillation** | External teacher-agent trajectory distillation launcher | [Nardien/agent-distillation](https://github.com/Nardien/agent-distillation) |
-| **REDI** | External negative-signal refinement launcher | [Tim-Siu/reinforcement-distillation](https://github.com/Tim-Siu/reinforcement-distillation) |
+## Project Structure
 
-## Distillation Track
+```
+auto-coder-trainer/
+│
+├── cli/                          # CLI entry points
+│   ├── main.py                   #   `act` command dispatcher
+│   ├── pipeline.py               #   Full agent team orchestrator
+│   ├── collect.py                #   Paper/repo discovery → method atoms
+│   ├── compose.py                #   Atoms → Recipe IR
+│   ├── train.py                  #   Recipe → training execution
+│   ├── report.py                 #   Results → blog / markdown / LaTeX
+│   ├── status.py                 #   Task & experiment summary
+│   └── rerun.py                  #   Auto-dispatch pending tasks
+│
+├── recipes/                      # Recipe IR layer
+│   ├── schema/recipe.schema.json #   JSON Schema (Draft 2020-12)
+│   ├── registry/                 #   Method atom registry
+│   ├── examples/                 #   3 example recipes (SFT, RL, distill)
+│   └── compiler.py               #   Recipe → TrainingConfig compiler
+│
+├── trainers/                     # Training backends
+│   ├── base.py                   #   Abstract TrainResult / EvalResult
+│   ├── sft/                      #   SFT trainer (TRL)
+│   ├── rl/                       #   RL/GRPO trainer (veRL)
+│   ├── distill/                  #   Distillation trainer (SFT + DPO)
+│   ├── tinyzero/                 #   TinyZero launcher
+│   ├── upstream/                 #   Open-R1, Agent Distill, REDI launchers
+│   └── utils/                    #   Budget, checkpoints, LoRA, seeds
+│
+├── evaluators/                   # Evaluation harness
+│   ├── swe_bench.py              #   SWE-bench integration
+│   ├── pass_at_k.py              #   pass@k metrics
+│   └── runner.py                 #   Multi-benchmark orchestration
+│
+├── judge/                        # Experiment judge (5 checks, 4 verdicts)
+│   ├── judge.py                  #   Core arbiter
+│   ├── baseline.py               #   Baseline alignment
+│   ├── ablation.py               #   Ablation validation
+│   ├── attribution.py            #   Failure analysis
+│   └── dedup.py                  #   Config hash deduplication
+│
+├── results/                      # Persistence & reporting
+│   ├── db.py                     #   SQLite result database (8 tables)
+│   ├── schema.sql                #   DB schema
+│   ├── ledger.py                 #   Task ledger for crash recovery
+│   └── report_generator.py       #   Markdown / LaTeX / blog reports
+│
+├── prompt_cache/                 # Cache-safe prompt construction
+│   ├── builder.py                #   4-layer prompt builder
+│   ├── monitor.py                #   Cache hit rate monitoring
+│   ├── compaction.py             #   Context compression
+│   └── rules.py                  #   6 cache safety rules
+│
+├── aris/                         # ARIS Research Plane
+│   ├── skills/                   #   75+ Claude Code skills
+│   ├── mcp-servers/              #   4 MCP servers
+│   ├── tools/                    #   arXiv fetcher, utilities
+│   └── docs/                     #   Setup guides
+│
+├── skills/                       # Top-level Claude Code skills
+│   ├── collect/                  #   /collect
+│   ├── compose/                  #   /compose
+│   ├── train/                    #   /train
+│   └── report/                   #   /report
+│
+├── tests/                        # Test suite (57 tests)
+├── pyproject.toml                # Package config (Python >= 3.10)
+├── Makefile                      # Convenience targets
+└── UPSTREAM_INTEGRATION.md       # Upstream integration policy
+```
 
-The project supports a coding-agent-friendly distillation path rather than a narrow logits-only KD setup:
+---
 
-- **Positive trajectory distillation**: train the student on teacher-generated agent traces or high-quality coding completions.
-- **Optional native pairwise refinement**: when the dataset includes `chosen`/`rejected` traces, run a second-stage TRL DPO refinement to push the student toward better trajectories and away from bad ones.
-- **Optional upstream refinement / training stacks**: switch to `backend=redi`, `backend=agent_distill`, or `backend=openr1` when you want to stay closer to the official SOTA implementation than to the native adapter path.
-- **Trajectory condensation**: long agent traces can be edge-preserving condensed before training so we keep the beginning/end of the reasoning path without exploding token cost.
+## Development
 
-This choice is intentional: for coding agents, teacher trajectories and tool-using traces are usually easier to obtain and more reusable than full teacher logits, and recent open work has shown strong results from this regime. See [UPSTREAM_INTEGRATION.md](UPSTREAM_INTEGRATION.md) for the upstream-first policy.
+```bash
+# Install with dev dependencies
+pip install -e ".[all,dev]"
 
-### TinyZero Migration
+# Run tests
+make test                     # or: python -m pytest tests/ -q
 
-TinyZero is the current baseline interface for both SFT and RL recipes in this repo. We migrate it at the launcher layer instead of vendoring the whole project:
+# Lint
+make lint                     # or: ruff check .
 
-- keep our Recipe IR, judge, reports, and result DB as the control plane
-- compile `backend=tinyzero` recipes into TinyZero-style Hydra overrides and runnable shell scripts
-- stay compatible with the underlying veRL entry points that TinyZero itself builds on
+# Run specific test
+python -m pytest tests/test_pipeline_and_blog_report.py -v
+```
 
-This keeps the framework maintainable while preserving baseline reproducibility.
+**Optional install extras**:
+
+| Extra | Packages |
+| --- | --- |
+| `sft` | trl, transformers, datasets, peft, accelerate |
+| `rl` | verl |
+| `eval` | swebench |
+| `dev` | pytest, ruff |
+| `all` | All of the above |
+
+---
 
 ## Status
 
-This project is under active development. Current status:
-
 - [x] ARIS Research Plane (75+ skills, 4 MCP servers)
-- [x] Recipe IR JSON Schema
-- [x] Project skeleton (trainers, evaluators, judge, results, CLI)
-- [x] Prompt cache infrastructure (builder, monitor, compaction, rules)
-- [x] CLI automation shell (`collect`, `compose`, `train`, `report`, `status`)
-- [x] Experiment judge logic and result DB helpers
-- [x] Report generation with verdict / ablation / multi-experiment comparison
-- [x] TinyZero baseline launcher for SFT / RL recipes
-- [x] SFT trainer implementation (TRL / Transformers fallback, dependency-gated)
-- [x] Distillation trainer implementation (trajectory SFT + optional TRL DPO refinement)
-- [x] RL trainer implementation (veRL)
-- [x] SWE-bench evaluator integration
-- [x] Persistent experiment recovery (`eval_runs`, tasks, artifacts, task ledgers)
-- [x] Upstream launcher adapters for Open-R1 / Agent Distillation / REDI
-- [x] Upstream launcher adapters with auto-dispatch (`rerun` command)
+- [x] Recipe IR JSON Schema + compiler
+- [x] CLI automation (`collect`, `compose`, `train`, `report`, `status`, `rerun`)
+- [x] **Full pipeline orchestrator** (`act pipeline`) — closed-loop agent team
+- [x] **Blog-style report generator** — LoRA Insights-inspired experiment diary
+- [x] Experiment judge (5 checks, 4 verdicts, auto-decision loop)
+- [x] SFT trainer (TRL backend, Full/LoRA/QLoRA)
+- [x] RL/GRPO trainer (veRL backend, 4 reward types)
+- [x] Distillation trainer (trajectory SFT + optional DPO refinement)
+- [x] SWE-bench & pass@k evaluators
+- [x] Upstream launchers (TinyZero, Open-R1, Agent Distillation, REDI)
+- [x] Persistent experiment recovery (SQLite DB, task ledgers, execution plans)
+- [x] Prompt cache infrastructure (builder, monitor, compaction, 6 rules)
+- [x] 57 tests passing
 - [ ] Case studies and reproductions
+
+---
 
 ## License
 
@@ -316,9 +443,9 @@ This project is under active development. Current status:
 
 ```bibtex
 @software{auto_coder_trainer,
-  title={Auto-Coder-Trainer: Research Operating System for Coding Agent Training},
-  author={Chenghao Yang},
-  year={2026},
-  url={https://github.com/chenghaoYang/auto-coder-trainer}
+  title   = {Auto-Coder-Trainer: Research Operating System for Coding Agent Training},
+  author  = {Chenghao Yang},
+  year    = {2025},
+  url     = {https://github.com/chenghaoYang/auto-coder-trainer}
 }
 ```
