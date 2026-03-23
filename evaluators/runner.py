@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,28 @@ def _coerce_metrics_from_payload(payload: Any) -> dict[str, Any]:
     return {}
 
 
+def _normalize_metric_key(key: str) -> str:
+    normalized = key.strip().lower()
+    normalized = normalized.replace("pass_at_", "pass@")
+    normalized = normalized.replace("passat", "pass@")
+    normalized = normalized.replace("pass_", "pass@")
+    if normalized in {"resolve_rate_percent", "resolve_percent"}:
+        normalized = "resolve_rate"
+    normalized = normalized.replace("_", "@") if normalized.startswith("pass") else normalized
+    return normalized
+
+
+def _normalize_metrics(metrics: dict[str, Any]) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for key, value in metrics.items():
+        if not isinstance(value, (int, float)):
+            continue
+        if not math.isfinite(value):
+            continue
+        normalized[_normalize_metric_key(key)] = float(value)
+    return normalized
+
+
 def _coerce_rows_to_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if not rows:
         return {}
@@ -82,14 +105,23 @@ def _resolve_local_metrics(checkpoint_path: str, benchmark: str) -> tuple[dict[s
     for path in files:
         if path.suffix == ".json":
             payload = _load_json(path)
-            metrics = _coerce_metrics_from_payload(payload)
+            metrics = _normalize_metrics(_coerce_metrics_from_payload(payload))
             if metrics:
-                return metrics, {"source_file": str(path)}
+                return metrics, {
+                    "source_file": str(path),
+                    "source_format": "json",
+                    "benchmark": benchmark,
+                }
         if path.suffix == ".jsonl":
             rows = _load_jsonl(path)
-            metrics = _coerce_rows_to_metrics(rows)
+            metrics = _normalize_metrics(_coerce_rows_to_metrics(rows))
             if metrics:
-                return metrics, {"source_file": str(path), "num_rows": len(rows)}
+                return metrics, {
+                    "source_file": str(path),
+                    "source_format": "jsonl",
+                    "num_rows": len(rows),
+                    "benchmark": benchmark,
+                }
 
     raise RuntimeError(
         f"Could not resolve benchmark '{benchmark}' from checkpoint path '{checkpoint_path}'. "
@@ -131,14 +163,23 @@ def run_evaluation(
         evaluator = SWEBenchEvaluator(variant=benchmark)
         predictions_path = _resolve_swe_predictions_path(checkpoint_path, benchmark)
         result = evaluator.evaluate(predictions_path, seed=seed)
+        audit = getattr(evaluator, "last_run_audit", {})
         return {
-            "metrics": result.metrics,
+            "metrics": _normalize_metrics(result.metrics),
             "details": {
                 "num_samples": result.num_samples,
                 "details": result.details,
                 "predictions_path": predictions_path,
+                "audit": audit,
+                "schema_version": "eval.v1",
             },
         }
 
     metrics, details = _resolve_local_metrics(checkpoint_path, benchmark)
-    return {"metrics": metrics, "details": details}
+    return {
+        "metrics": metrics,
+        "details": {
+            **details,
+            "schema_version": "eval.v1",
+        },
+    }

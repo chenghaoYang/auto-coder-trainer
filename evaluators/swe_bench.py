@@ -7,6 +7,7 @@ import json
 import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,18 @@ VARIANT_DATASET_MAP: dict[str, str] = {
 VALID_VARIANTS = tuple(VARIANT_DATASET_MAP.keys())
 
 
+class SWEBenchHarnessError(RuntimeError):
+    """Base error for SWE-bench harness failures."""
+
+
+class SWEBenchHarnessTimeoutError(SWEBenchHarnessError):
+    """Raised when harness execution times out."""
+
+
+class SWEBenchHarnessProcessError(SWEBenchHarnessError):
+    """Raised when harness exits with a non-zero code."""
+
+
 class SWEBenchEvaluator(BaseEvaluator):
     """Evaluator for SWE-bench family benchmarks.
 
@@ -35,6 +48,7 @@ class SWEBenchEvaluator(BaseEvaluator):
         variant: str = "swe-bench-lite",
         max_workers: int = 4,
         timeout: int = 1800,
+        retries: int = 1,
     ):
         if variant not in VALID_VARIANTS:
             raise ValueError(
@@ -45,6 +59,8 @@ class SWEBenchEvaluator(BaseEvaluator):
         self.dataset = VARIANT_DATASET_MAP[variant]
         self.max_workers = max_workers
         self.timeout = timeout
+        self.retries = retries
+        self.last_run_audit: dict[str, Any] = {}
 
     def get_benchmark_name(self) -> str:
         return self.variant
@@ -77,19 +93,53 @@ class SWEBenchEvaluator(BaseEvaluator):
             "--log_dir", log_dir,
         ]
         logger.info("Running SWE-bench harness: %s", " ".join(cmd))
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"SWE-bench harness exited with code {result.returncode}.\n"
+        last_error: Exception | None = None
+        attempts = self.retries + 1
+        for attempt in range(1, attempts + 1):
+            started_at = time.time()
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                last_error = SWEBenchHarnessTimeoutError(
+                    f"SWE-bench harness timed out after {self.timeout}s "
+                    f"(attempt {attempt}/{attempts})."
+                )
+                logger.warning("%s", last_error)
+                if attempt == attempts:
+                    raise last_error from exc
+                continue
+
+            self.last_run_audit = {
+                "attempt": attempt,
+                "attempts": attempts,
+                "duration_sec": round(time.time() - started_at, 2),
+                "command": " ".join(cmd),
+                "dataset": self.dataset,
+                "run_id": run_id,
+                "log_dir": log_dir,
+                "returncode": result.returncode,
+            }
+
+            if result.returncode == 0:
+                return result
+
+            last_error = SWEBenchHarnessProcessError(
+                f"SWE-bench harness exited with code {result.returncode} "
+                f"(attempt {attempt}/{attempts}).\n"
                 f"stdout:\n{result.stdout}\n"
                 f"stderr:\n{result.stderr}"
             )
-        return result
+            logger.warning("%s", last_error)
+            if attempt == attempts:
+                raise last_error
+
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _parse_report(log_dir: str, run_id: str) -> dict[str, Any]:
@@ -107,12 +157,20 @@ class SWEBenchEvaluator(BaseEvaluator):
         ]
         for candidate in candidates:
             if candidate.exists():
-                return json.loads(candidate.read_text())
+                parsed = json.loads(candidate.read_text())
+                if isinstance(parsed, dict) and {"resolved", "total"} <= set(parsed.keys()):
+                    return parsed
 
-        # Fall back: find the first JSON file in the directory tree.
+        # Fall back: pick the most recent report-like JSON in the directory tree.
         json_files = sorted(log_path.rglob("*.json"))
-        if json_files:
-            return json.loads(json_files[0].read_text())
+        report_candidates: list[tuple[float, dict[str, Any]]] = []
+        for file in json_files:
+            parsed = json.loads(file.read_text())
+            if isinstance(parsed, dict) and {"resolved", "total"} <= set(parsed.keys()):
+                report_candidates.append((file.stat().st_mtime, parsed))
+        if report_candidates:
+            report_candidates.sort(key=lambda x: x[0], reverse=True)
+            return report_candidates[0][1]
 
         raise FileNotFoundError(
             f"Could not locate evaluation results in {log_dir}"
@@ -124,8 +182,8 @@ class SWEBenchEvaluator(BaseEvaluator):
         """Convert a raw harness report dict into a BenchmarkResult."""
         resolved = report.get("resolved", [])
         total = report.get("total", [])
-        num_resolved = len(resolved) if isinstance(resolved, list) else int(resolved)
-        num_total = len(total) if isinstance(total, list) else int(total)
+        num_resolved = len(resolved) if isinstance(resolved, list) else int(resolved or 0)
+        num_total = len(total) if isinstance(total, list) else int(total or 0)
 
         resolve_rate = (num_resolved / num_total * 100.0) if num_total else 0.0
 
@@ -198,6 +256,7 @@ class SWEBenchEvaluator(BaseEvaluator):
             Path(log_dir).mkdir(parents=True, exist_ok=True)
             self._run_harness(predictions_path, run_id, log_dir)
             report = self._parse_report(log_dir, run_id)
+            self.last_run_audit["report_path"] = str(log_dir)
             return self._build_result(report, seed)
 
         # Use a temporary directory so we always clean up.
@@ -205,4 +264,5 @@ class SWEBenchEvaluator(BaseEvaluator):
             log_dir = tmp_dir
             self._run_harness(predictions_path, run_id, log_dir)
             report = self._parse_report(log_dir, run_id)
+            self.last_run_audit["report_path"] = str(log_dir)
             return self._build_result(report, seed)
