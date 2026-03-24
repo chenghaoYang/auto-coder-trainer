@@ -130,6 +130,7 @@ def import_results(
     bundle_dir: str | Path,
     recipe_id: str,
     experiment_id: str,
+    expected_seeds: list[int] | None = None,
 ) -> dict[str, Any]:
     """Import SWE-Lego training and eval results into auto-coder-trainer format.
 
@@ -176,22 +177,49 @@ def import_results(
     eval_results: list[dict[str, Any]] = []
     swebench_results_dir = SWE_LEGO_ROOT / "SWE-bench-4.0.4" / "results"
     if swebench_results_dir.is_dir():
-        swebench = parse_swebench_results(swebench_results_dir)
-        if swebench.get("status") == "ok":
+        seeds = [int(seed) for seed in (expected_seeds or [42])]
+        seen_runs = 0
+        for seed in seeds:
+            run_id = f"openhands_seed_{seed}"
+            swebench = parse_swebench_results(swebench_results_dir, run_id=run_id)
+            if swebench.get("status") != "ok":
+                continue
             eval_results.append({
                 "recipe_id": recipe_id,
-                "benchmark": "swe_bench_verified",
+                "benchmark": "swe-bench-verified",
                 "metrics": {
                     "resolved_count": swebench["resolved_count"],
                     "total_count": swebench["total_count"],
                     "resolve_rate": swebench["resolve_rate"],
                 },
-                "seed": 42,
+                "seed": seed,
                 "details": {
                     "report_path": swebench.get("report_path"),
                     "per_instance": swebench.get("per_instance", []),
+                    "run_id": run_id,
                 },
             })
+            seen_runs += 1
+
+        if seen_runs == 0:
+            swebench = parse_swebench_results(swebench_results_dir, run_id="openhands")
+            if swebench.get("status") == "ok":
+                fallback_seed = seeds[0] if seeds else 42
+                eval_results.append({
+                    "recipe_id": recipe_id,
+                    "benchmark": "swe-bench-verified",
+                    "metrics": {
+                        "resolved_count": swebench["resolved_count"],
+                        "total_count": swebench["total_count"],
+                        "resolve_rate": swebench["resolve_rate"],
+                    },
+                    "seed": fallback_seed,
+                    "details": {
+                        "report_path": swebench.get("report_path"),
+                        "per_instance": swebench.get("per_instance", []),
+                        "run_id": "openhands",
+                    },
+                })
 
     return {
         "experiment_id": experiment_id,

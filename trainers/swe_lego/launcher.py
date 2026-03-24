@@ -51,7 +51,11 @@ def build_swe_lego_launcher_bundle(
     model_cfg: dict[str, Any] = config.get("model_config", {})
     data_cfg: dict[str, Any] = config.get("data_config", {})
     training_params: dict[str, Any] = config.get("training_params", {})
+    eval_cfg: dict[str, Any] = config.get("eval_config", {})
     budget: dict[str, Any] = config.get("budget", {})
+    eval_seeds = [int(seed) for seed in eval_cfg.get("seeds", [42]) if isinstance(seed, int)]
+    if not eval_seeds:
+        eval_seeds = [42]
 
     if trainer_type != "sft":
         raise ValueError(
@@ -81,6 +85,7 @@ def build_swe_lego_launcher_bundle(
         "ACT_REPO_ROOT": str(repo_root),
         "ACT_RECIPE_ID": recipe_id,
         "ACT_GPU_COUNT": gpu_count,
+        "ACT_EVAL_SEEDS": ",".join(str(seed) for seed in eval_seeds),
     }
 
     # Resolve model profile for dependency checks
@@ -157,12 +162,17 @@ def build_swe_lego_launcher_bundle(
             "launcher_json": str(launcher_json),
             "import_results_script": str(bundle_dir / "import_results.sh"),
         },
+        "eval": {
+            "benchmarks": list(eval_cfg.get("benchmarks", [])),
+            "seeds": eval_seeds,
+        },
         # Internal data carried for write step
         "_train_config_dict": train_config,
         "_dataset_info_dict": dataset_info,
         "_model_config": model_cfg,
         "_data_config": data_cfg,
         "_training_params": training_params,
+        "_eval_config": eval_cfg,
         "_model_profile_overrides": training_params.get("model_profile_overrides"),
     }
 
@@ -225,6 +235,7 @@ def write_swe_lego_launcher_bundle(bundle: dict[str, Any]) -> dict[str, str]:
             bundle_dir=str(bundle_dir),
             max_model_len=profile.max_model_len,
             model_name=model_base,
+            num_runs=max(1, len(bundle.get("eval", {}).get("seeds", [42]))),
             openhands_model_config=profile.openhands_model_config,
             vllm_extra_flags=profile.vllm_extra_flags,
         )
@@ -236,6 +247,7 @@ def write_swe_lego_launcher_bundle(bundle: dict[str, Any]) -> dict[str, str]:
         build_eval_script(
             bundle_dir=str(bundle_dir),
             model_short_name=model_short_name,
+            seeds=list(bundle.get("eval", {}).get("seeds", [42])),
         )
     )
     eval_path.chmod(0o755)

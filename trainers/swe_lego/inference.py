@@ -66,6 +66,7 @@ def build_infer_script(
     model_name: str = "Qwen/Qwen3-8B",
     port: int = 8000,
     num_workers: int = 1,
+    num_runs: int = 1,
     max_iterations: int = 100,
     eval_limit: int = 500,
     dataset: str = "princeton-nlp/SWE-bench_Verified",
@@ -97,7 +98,7 @@ MAX_ITER={max_iterations}
 NUM_WORKERS={num_workers}
 DATASET={shlex.quote(dataset)}
 DATASET_SPLIT=test
-N_RUNS=1
+N_RUNS={max(1, int(num_runs))}
 MODE=swe
 
 export USE_HINT_TEXT=false
@@ -118,6 +119,7 @@ def build_eval_script(
     dataset: str = "princeton-nlp/SWE-bench_Verified",
     model_short_name: str = "",
     max_iterations: int = 100,
+    seeds: list[int] | None = None,
 ) -> str:
     """Generate SWE-bench evaluation script.
 
@@ -137,6 +139,49 @@ def build_eval_script(
             f"CodeActAgent/{short}_maxiter_{max_iterations}_N_v0.53.0-no-hint-noplan-run_1/output.jsonl"
         )
 
+    seeds = list(seeds or [42])
+
+    def _resolve_output_jsonl(run_index: int) -> str:
+        if output_jsonl:
+            token = f"run_{run_index}"
+            if "run_1" in output_jsonl:
+                return output_jsonl.replace("run_1", token)
+            return output_jsonl
+        short = model_short_name or "Qwen3-8B"
+        return (
+            "evaluation/evaluation_outputs/outputs/"
+            "princeton-nlp__SWE-bench_Verified-test/"
+            f"CodeActAgent/{short}_maxiter_{max_iterations}_N_v0.53.0-no-hint-noplan-run_{run_index}/output.jsonl"
+        )
+
+    blocks: list[str] = []
+    for run_index, seed in enumerate(seeds, start=1):
+        run_output_jsonl = _resolve_output_jsonl(run_index)
+        blocks.extend(
+            [
+                f"# Seed {seed} (run_{run_index})",
+                f"YOUR_OUTPUT_JSONL={shlex.quote(run_output_jsonl)}",
+                "",
+                'cd "$SWE_LEGO_ROOT/OpenHands-0.53.0"',
+                "./evaluation/benchmarks/swe_bench/scripts/eval_infer.sh \\",
+                '    "$YOUR_OUTPUT_JSONL" \\',
+                '    dataset_name="$DATASET" split="$DATASET_SPLIT" --convert-only',
+                "",
+                'cd "$SWE_LEGO_ROOT/SWE-bench-4.0.4"',
+                'SWEBENCH_JSONL="../OpenHands-0.53.0/${YOUR_OUTPUT_JSONL/output.jsonl/output.swebench.jsonl}"',
+                "",
+                "python -m swebench.harness.run_evaluation \\",
+                "    --max_workers 10 \\",
+                '    --dataset_name "$DATASET" \\',
+                "    --report_dir ./results/ \\",
+                "    --cache_level instance \\",
+                '    --predictions_path "$SWEBENCH_JSONL" \\',
+                f"    --run_id openhands_seed_{seed} \\",
+                "    --timeout 500",
+                "",
+            ]
+        )
+
     return f"""\
 #!/usr/bin/env bash
 set -euo pipefail
@@ -146,28 +191,7 @@ set -euo pipefail
 SWE_LEGO_ROOT={swe_lego_root}
 DATASET={shlex.quote(dataset)}
 DATASET_SPLIT=test
-
-# Stage 1: Convert OpenHands output
-YOUR_OUTPUT_JSONL={shlex.quote(output_jsonl)}
-
-cd "$SWE_LEGO_ROOT/OpenHands-0.53.0"
-./evaluation/benchmarks/swe_bench/scripts/eval_infer.sh \\
-    "$YOUR_OUTPUT_JSONL" \\
-    dataset_name="$DATASET" split="$DATASET_SPLIT" --convert-only
-
-# Stage 2: SWE-bench harness evaluation
-cd "$SWE_LEGO_ROOT/SWE-bench-4.0.4"
-
-SWEBENCH_JSONL="../OpenHands-0.53.0/${{YOUR_OUTPUT_JSONL/output.jsonl/output.swebench.jsonl}}"
-
-python -m swebench.harness.run_evaluation \\
-    --max_workers 10 \\
-    --dataset_name "$DATASET" \\
-    --report_dir ./results/ \\
-    --cache_level instance \\
-    --predictions_path "$SWEBENCH_JSONL" \\
-    --run_id openhands \\
-    --timeout 500
+{"\n".join(blocks).rstrip()}
 """
 
 
@@ -180,6 +204,7 @@ def build_serve_and_infer_script(
     max_model_len: int = 163840,
     model_name: str = "Qwen/Qwen3-8B",
     num_workers: int = 1,
+    num_runs: int = 1,
     max_iterations: int = 100,
     eval_limit: int = 500,
     dataset: str = "princeton-nlp/SWE-bench_Verified",
@@ -262,7 +287,7 @@ MAX_ITER={max_iterations}
 NUM_WORKERS={num_workers}
 DATASET={shlex.quote(dataset)}
 DATASET_SPLIT=test
-N_RUNS=1
+N_RUNS={max(1, int(num_runs))}
 MODE=swe
 
 export USE_HINT_TEXT=false

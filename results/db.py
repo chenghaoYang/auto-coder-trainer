@@ -19,6 +19,7 @@ _JSON_FIELDS = {
     "train_metrics_json",
     "checks_json",
     "suggestions_json",
+    "research_suggestions_json",
     "recipe_json",
     "budget_json",
     "details_json",
@@ -52,6 +53,20 @@ class ResultDB:
         self._conn.execute("PRAGMA busy_timeout=5000")
         schema = SCHEMA_PATH.read_text()
         self._conn.executescript(schema)
+        self._ensure_optional_columns()
+
+    def _ensure_optional_columns(self) -> None:
+        """Apply lightweight schema migrations for optional JSON columns."""
+        conn = self._ensure_conn()
+        existing_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(verdicts)").fetchall()
+        }
+        if "research_suggestions_json" not in existing_columns:
+            conn.execute(
+                "ALTER TABLE verdicts ADD COLUMN research_suggestions_json TEXT"
+            )
+            conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
@@ -161,7 +176,7 @@ class ResultDB:
         if recipe_id:
             query += " WHERE recipe_id = ?"
             params.append(recipe_id)
-        query += " ORDER BY timestamp DESC, id DESC"
+        query += " ORDER BY timestamp DESC, rowid DESC"
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
@@ -337,14 +352,15 @@ class ResultDB:
         conn = self._ensure_conn()
         cur = conn.execute(
             """INSERT INTO verdicts
-               (experiment_id, verdict, reasoning, checks_json, suggestions_json)
-               VALUES (?, ?, ?, ?, ?)""",
+               (experiment_id, verdict, reasoning, checks_json, suggestions_json, research_suggestions_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 verdict["experiment_id"],
                 verdict["verdict"],
                 verdict.get("reasoning"),
                 self._serialize_json(verdict.get("checks_json")),
                 self._serialize_json(verdict.get("suggestions_json")),
+                self._serialize_json(verdict.get("research_suggestions_json")),
             ),
         )
         conn.commit()
@@ -441,7 +457,7 @@ class ResultDB:
         """Find experiments with matching config hash (dedup check)."""
         conn = self._ensure_conn()
         cur = conn.execute(
-            "SELECT * FROM experiments WHERE config_hash = ? ORDER BY timestamp DESC, id DESC",
+            "SELECT * FROM experiments WHERE config_hash = ? ORDER BY timestamp DESC, rowid DESC",
             (config_hash,),
         )
         return [self._row_to_dict(row) for row in cur.fetchall()]

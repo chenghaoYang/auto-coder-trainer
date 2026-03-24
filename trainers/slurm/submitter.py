@@ -358,7 +358,7 @@ def run_swe_lego_pipeline(
     bundle_dir: Union[str, Path],
     slurm_config: Dict[str, object],
 ) -> Dict[str, object]:
-    """Submit the full SWE-Lego 5-stage pipeline with dependencies.
+    """Submit the full SWE-Lego 6-stage pipeline with dependencies.
 
     Stage dependency graph::
 

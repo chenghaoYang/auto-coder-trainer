@@ -40,22 +40,6 @@ def _describe_task(task: dict[str, Any]) -> str:
     return f"[{priority}] {kind}: {title}"
 
 
-def _find_recipe_path(recipe_id: str, db) -> str | None:
-    """Try to locate the recipe JSON path from the DB experiment records."""
-    experiments = db.find_by_recipe(recipe_id)
-    for exp in experiments:
-        recipe_json = exp.get("recipe_json")
-        if isinstance(recipe_json, dict):
-            # The recipe is stored inline — we can use it directly later
-            return None
-        # Check artifacts for the recipe file
-    artifacts = db.get_artifacts_for_recipe(recipe_id)
-    for artifact in artifacts:
-        if artifact.get("kind") in ("recipe", "recipe_json"):
-            return artifact.get("path")
-    return None
-
-
 def _get_recipe_from_db(recipe_id: str, db) -> dict | None:
     """Retrieve the stored recipe dict from the most recent experiment."""
     experiments = db.find_by_recipe(recipe_id)
@@ -64,6 +48,88 @@ def _get_recipe_from_db(recipe_id: str, db) -> dict | None:
         if isinstance(recipe_json, dict) and recipe_json:
             return recipe_json
     return None
+
+
+def _set_nested_value(document: dict[str, Any], path: str, value: Any) -> None:
+    """Set a dotted path like ``trainer.params.lr`` on a recipe dict."""
+    parts = [part for part in path.split(".") if part]
+    if not parts:
+        return
+
+    cursor: dict[str, Any] = document
+    for part in parts[:-1]:
+        next_value = cursor.get(part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            cursor[part] = next_value
+    cursor = next_value
+    cursor[parts[-1]] = value
+
+
+def _normalize_ablation_targets(payload: dict[str, Any]) -> list[str]:
+    """Extract target ablation expressions from task payloads."""
+    raw = payload.get("targets", payload.get("missing"))
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, str)]
+    return []
+
+
+def _parse_ablation_target(target: str) -> tuple[str, Any | None]:
+    """Parse ``trainer.params.lr=1e-5`` into (path, value)."""
+    if "=" not in target:
+        return target.strip(), None
+    variable, raw_value = target.split("=", 1)
+    variable = variable.strip()
+    raw_value = raw_value.strip()
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError:
+        value = raw_value
+    return variable, value
+
+
+def _ablation_values_match(expected: Any, actual: Any) -> bool:
+    """Best-effort equality check for ablation values across JSON/string forms."""
+    if expected == actual:
+        return True
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        return float(expected) == float(actual)
+    return str(expected) == str(actual)
+
+
+def _select_ablation_variants(
+    ablation_specs: list[dict[str, Any]],
+    targets: list[str],
+) -> list[tuple[dict[str, Any], Any]]:
+    """Select only the ablation variants requested by the task payload."""
+    if not targets:
+        return [
+            (spec, value)
+            for spec in ablation_specs
+            for value in spec.get("values", [])
+        ]
+
+    parsed_targets = [_parse_ablation_target(target) for target in targets]
+    selected: list[tuple[dict[str, Any], Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for spec in ablation_specs:
+        variable = spec.get("variable", "")
+        for value in spec.get("values", []):
+            for target_variable, target_value in parsed_targets:
+                if target_variable != variable:
+                    continue
+                if target_value is not None and not _ablation_values_match(target_value, value):
+                    continue
+                key = (variable, json.dumps(value, sort_keys=True, default=str))
+                if key not in seen:
+                    seen.add(key)
+                    selected.append((spec, value))
+                break
+
+    return selected
 
 
 def _dispatch_rerun_seeds(
@@ -138,7 +204,8 @@ def _dispatch_run_ablation(
 ) -> bool:
     """Dispatch a run_ablation task."""
     payload = task.get("payload_json", {}) or {}
-    missing = payload.get("missing")
+    targets = _normalize_ablation_targets(payload)
+    missing = targets or payload.get("missing")
     suggestions = payload.get("suggestions")
 
     if missing:
@@ -155,12 +222,16 @@ def _dispatch_run_ablation(
         print("[rerun]   Warning: recipe has no ablation specs defined.")
         return False
 
+    selected_variants = _select_ablation_variants(ablation_specs, targets)
+    if targets and not selected_variants:
+        print(f"[rerun]   Warning: no ablation variants matched task targets: {targets}")
+        return False
+
     if dry_run:
-        print(f"[rerun]   (dry-run) Would generate {len(ablation_specs)} ablation variant(s):")
-        for spec in ablation_specs:
+        print(f"[rerun]   (dry-run) Would generate {len(selected_variants)} ablation variant(s):")
+        for spec, value in selected_variants:
             name = spec.get("name", spec.get("variable", "?"))
-            values = spec.get("values", [])
-            print(f"[rerun]     - {name}: {values}")
+            print(f"[rerun]     - {name}: {value}")
         return True
 
     # Generate and run ablation variants by modifying the recipe for each variant
@@ -168,37 +239,41 @@ def _dispatch_run_ablation(
     import tempfile
 
     success_count = 0
-    for spec in ablation_specs:
+    for spec, value in selected_variants:
         variable = spec.get("variable", "")
-        values = spec.get("values", [])
-        for value in values:
-            print(f"[rerun]   Running ablation variant: {variable}={value}")
-            recipe_variant = copy.deepcopy(recipe)
-            # Apply the ablation override to the training config
-            training_cfg = recipe_variant.get("training", {})
-            if isinstance(training_cfg, dict):
-                training_cfg[variable] = value
-                recipe_variant["training"] = training_cfg
+        print(f"[rerun]   Running ablation variant: {variable}={value}")
+        recipe_variant = copy.deepcopy(recipe)
+        _set_nested_value(recipe_variant, variable, value)
+        recipe_variant["ablation_run"] = {
+            "parent_recipe_id": recipe_id,
+            "name": spec.get("name", variable),
+            "variable": variable,
+            "value": value,
+        }
+        variant_suffix = f"{variable}={value}"
+        recipe_variant["name"] = (
+            f"{recipe_variant.get('name', recipe_id)} [{variant_suffix}]"
+        )
 
-            tmp_fd = tempfile.NamedTemporaryFile(suffix=".json", prefix="ablation_", delete=False)
-            tmp_file = Path(tmp_fd.name)
-            tmp_fd.close()
-            tmp_file.write_text(json.dumps(recipe_variant, indent=2))
-            try:
-                from cli.train import run_train
+        tmp_fd = tempfile.NamedTemporaryFile(suffix=".json", prefix="ablation_", delete=False)
+        tmp_file = Path(tmp_fd.name)
+        tmp_fd.close()
+        tmp_file.write_text(json.dumps(recipe_variant, indent=2))
+        try:
+            from cli.train import run_train
 
-                train_args = argparse.Namespace(
-                    recipe=str(tmp_file),
-                    output_dir="outputs/",
-                    dry_run=False,
-                )
-                run_train(train_args)
-                success_count += 1
-            except Exception as exc:
-                print(f"[rerun]   Error running ablation {variable}={value}: {exc}")
-            finally:
-                if tmp_file.exists():
-                    tmp_file.unlink()
+            train_args = argparse.Namespace(
+                recipe=str(tmp_file),
+                output_dir="outputs/",
+                dry_run=False,
+            )
+            run_train(train_args)
+            success_count += 1
+        except Exception as exc:
+            print(f"[rerun]   Error running ablation {variable}={value}: {exc}")
+        finally:
+            if tmp_file.exists():
+                tmp_file.unlink()
 
     print(f"[rerun]   Completed {success_count} ablation variant(s).")
     return success_count > 0
@@ -248,9 +323,11 @@ def _dispatch_execution_step(
     print("[rerun]   This step requires manual execution (external launcher).")
 
     if dry_run:
-        print("[rerun]   (dry-run) Would mark as in_progress for manual follow-up.")
+        print("[rerun]   (dry-run) Would leave this task blocked for manual follow-up.")
 
-    # Execution steps are informational — we cannot auto-run them
+    # Execution steps are informational only. The task should stay blocked
+    # until an external run finishes and cli.train/_import_swe_lego_results
+    # marks it completed after importing results.
     return True
 
 
@@ -258,8 +335,9 @@ def run_rerun(args: argparse.Namespace) -> None:
     """Auto-dispatch pending tasks for a recipe.
 
     Reads open tasks from the DB, determines the appropriate action for
-    each one, and executes it.  Tasks are marked in_progress before
-    starting and completed on success.
+    each one, and executes it. Automatic tasks move through the normal
+    in_progress -> completed flow; external/manual execution steps stay
+    blocked until a later result import closes them.
     """
     recipe_id = args.recipe_id
     dry_run = getattr(args, "dry_run", False)
@@ -323,6 +401,7 @@ def run_rerun(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     completed_count = 0
     failed_count = 0
+    awaiting_count = 0
 
     for task in dispatchable:
         task_id = task.get("id", "?")
@@ -330,7 +409,7 @@ def run_rerun(args: argparse.Namespace) -> None:
         print(f"\n[rerun] Dispatching task {task_id}: {_describe_task(task)}")
 
         # Mark as in_progress (unless dry-run)
-        if not dry_run:
+        if not dry_run and kind != "execution_step":
             _mark_task(db, task, "in_progress")
 
         success = False
@@ -356,6 +435,14 @@ def run_rerun(args: argparse.Namespace) -> None:
             success = False
 
         # Mark result (unless dry-run)
+        if kind == "execution_step":
+            if not dry_run:
+                note = "Awaiting manual/external execution."
+                task["notes"] = note if not task.get("notes") else f"{task['notes']} | {note}"
+                _mark_task(db, task, "blocked")
+            awaiting_count += 1
+            continue
+
         if not dry_run:
             if success:
                 _mark_task(db, task, "completed")
@@ -377,6 +464,7 @@ def run_rerun(args: argparse.Namespace) -> None:
     print(f"[rerun] Recipe     : {recipe_id}")
     print(f"[rerun] Dispatched : {len(dispatchable)}")
     print(f"[rerun] Completed  : {completed_count}")
+    print(f"[rerun] Awaiting   : {awaiting_count}")
     print(f"[rerun] Failed     : {failed_count}")
     if dry_run:
         print("[rerun] Mode       : dry-run (no changes applied)")

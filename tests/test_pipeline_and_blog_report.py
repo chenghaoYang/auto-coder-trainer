@@ -522,6 +522,84 @@ class TestPipeline:
         assert "training is running asynchronously" in captured
         assert not (report_dir / "report.md").exists()
 
+    def test_pipeline_does_not_retrain_base_recipe_after_ablation_dispatch(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        recipe = _baseline_recipe()
+        recipe_path = tmp_path / "recipe.json"
+        recipe_path.write_text(json.dumps(recipe, indent=2))
+
+        from cli import pipeline as pipeline_mod
+
+        calls = {"train": 0, "rerun": 0, "report": 0}
+        state = {"ablation_dispatched": False}
+
+        def _fake_run_train(recipe_path_arg, output_dir, *, dry_run=False):
+            calls["train"] += 1
+            return "exp-base"
+
+        def _fake_get_latest_experiment(recipe_id, *, db=None):
+            if state["ablation_dispatched"]:
+                return {"id": "exp-ablation", "recipe_id": recipe_id}
+            return {"id": "exp-base", "recipe_id": recipe_id}
+
+        def _fake_get_experiment_verdict(experiment_id, *, db=None):
+            if experiment_id == "exp-base":
+                return {
+                    "experiment_id": "exp-base",
+                    "verdict": "needs_ablation",
+                    "reasoning": "Missing lr sweep",
+                    "suggestions_json": ["Run missing ablation experiments before accepting"],
+                    "research_suggestions": [],
+                }
+            if experiment_id == "exp-ablation":
+                return {
+                    "experiment_id": "exp-ablation",
+                    "verdict": "accept",
+                    "reasoning": "Ablation completed",
+                    "suggestions_json": [],
+                    "research_suggestions": [],
+                }
+            return None
+
+        def _fake_run_rerun(recipe_id, *, dry_run=False):
+            calls["rerun"] += 1
+            state["ablation_dispatched"] = True
+
+        def _fake_run_report(recipe_id, experiment_id, output_dir, *, fmt="blog"):
+            calls["report"] += 1
+            report_path = Path(output_dir) / "report.md"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text("report")
+            return report_path
+
+        monkeypatch.setattr(pipeline_mod, "_run_train", _fake_run_train)
+        monkeypatch.setattr(pipeline_mod, "_get_latest_experiment", _fake_get_latest_experiment)
+        monkeypatch.setattr(pipeline_mod, "_get_experiment_verdict", _fake_get_experiment_verdict)
+        monkeypatch.setattr(pipeline_mod, "_run_rerun", _fake_run_rerun)
+        monkeypatch.setattr(pipeline_mod, "_run_report", _fake_run_report)
+        monkeypatch.setattr(pipeline_mod, "_is_waiting_on_external_execution", lambda recipe_id, experiment_id: False)
+
+        pipeline_mod.run_pipeline(
+            Namespace(
+                query=None,
+                atoms=None,
+                recipe=str(recipe_path),
+                model="Qwen/Qwen2.5-Coder-7B-Instruct",
+                output_dir=str(tmp_path / "outputs"),
+                report_dir=str(tmp_path / "reports"),
+                report_format="blog",
+                max_iterations=2,
+                dry_run=False,
+            )
+        )
+
+        assert calls["train"] == 1
+        assert calls["rerun"] == 1
+        assert calls["report"] == 1
+
 
 # ---------------------------------------------------------------------------
 # CLI report format integration

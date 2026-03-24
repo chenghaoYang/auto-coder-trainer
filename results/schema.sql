@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS verdicts (
     reasoning TEXT,
     checks_json TEXT,  -- JSON blob of check results
     suggestions_json TEXT,  -- JSON array of suggestions
+    research_suggestions_json TEXT,  -- JSON array of feedback-driven research actions
     timestamp TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

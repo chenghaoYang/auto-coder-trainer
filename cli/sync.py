@@ -182,6 +182,63 @@ def _handle_failed_pipeline(
     })
 
 
+def _format_metric_summary(metrics: dict[str, Any]) -> str:
+    """Render a concise metric summary for sync output."""
+    if not isinstance(metrics, dict):
+        return "-"
+    preferred_keys = [
+        "resolve_rate",
+        "swe-bench-verified/resolve_rate",
+        "swe-bench-lite/resolve_rate",
+        "pass@1",
+    ]
+    parts: list[str] = []
+    seen: set[str] = set()
+    for key in preferred_keys:
+        value = metrics.get(key)
+        if isinstance(value, (int, float)):
+            parts.append(f"{key}={value:.4g}")
+            seen.add(key)
+    for key, value in sorted(metrics.items()):
+        if key in seen or not isinstance(value, (int, float)):
+            continue
+        parts.append(f"{key}={value:.4g}")
+        if len(parts) >= 4:
+            break
+    return ", ".join(parts) if parts else "-"
+
+
+def _print_import_summary(db, experiment_id: str) -> None:
+    """Print a concise post-import summary for the newly synced experiment."""
+    experiment = db.get_experiment(experiment_id)
+    if experiment is None:
+        return
+
+    verdict = db.get_latest_verdict(experiment_id)
+    tasks = [
+        task
+        for task in db.get_tasks(
+            recipe_id=experiment.get("recipe_id"),
+            experiment_id=experiment_id,
+        )
+        if task.get("status") in {"pending", "blocked", "in_progress"}
+    ]
+
+    print(f"[sync]   Experiment     : {experiment_id}")
+    print(f"[sync]   Recipe         : {experiment.get('recipe_id', '?')}")
+    print(f"[sync]   Status         : {experiment.get('status', '?')}")
+    print(f"[sync]   Metrics        : {_format_metric_summary(experiment.get('metrics_json', {}))}")
+    if verdict:
+        print(f"[sync]   Judge verdict  : {verdict.get('verdict', '?')}")
+        reasoning = verdict.get("reasoning")
+        if reasoning:
+            print(f"[sync]   Reasoning      : {reasoning}")
+    if tasks:
+        print("[sync]   Open tasks:")
+        for task in tasks[:5]:
+            print(f"[sync]     - {task.get('kind', '?')}: {task.get('title', '?')}")
+
+
 def run_sync(args: argparse.Namespace) -> None:
     """Poll SLURM jobs and auto-import completed results."""
     recipe_id = getattr(args, "recipe_id", None)
@@ -252,6 +309,8 @@ def run_sync(args: argparse.Namespace) -> None:
                 )
                 if success:
                     imported += 1
+                    if not dry_run:
+                        _print_import_summary(db, exp_id)
                 else:
                     failed += 1
             else:

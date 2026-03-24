@@ -456,19 +456,19 @@ def _post_train_tasks(
                     title=f"Run missing ablation: {missing_ablation}",
                     status="pending",
                     priority="high",
-                    payload={"missing": missing_ablation},
+                    payload={"targets": [missing_ablation]},
                 )
             )
-        for suggestion in suggestions:
+        if not missing and suggestions:
             tasks.append(
                 _make_task(
                     recipe_id=recipe_id,
                     experiment_id=experiment_id,
                     kind="run_ablation",
-                    title=suggestion,
+                    title="Run missing ablation experiments before acceptance",
                     status="pending",
                     priority="high",
-                    payload={"missing": missing},
+                    payload={"suggestions": suggestions},
                 )
             )
         if len(tasks) == before_ablation_tasks:
@@ -511,6 +511,34 @@ def _persist_artifacts(result_db, recipe_id: str, experiment_id: str | None, art
                 "metadata_json": artifact.get("metadata", {}),
             }
         )
+
+
+def _persist_ablation_record(
+    result_db,
+    recipe: dict[str, Any],
+    experiment_id: str | None,
+    metrics: dict[str, float] | None = None,
+) -> None:
+    """Register an ablation result when the recipe carries ablation metadata."""
+    if result_db is None or experiment_id is None:
+        return
+
+    ablation_run = recipe.get("ablation_run")
+    if not isinstance(ablation_run, dict):
+        return
+
+    variable = ablation_run.get("variable")
+    if not variable:
+        return
+
+    result_db.insert_ablation(
+        {
+            "experiment_id": experiment_id,
+            "variable": str(variable),
+            "value": ablation_run.get("value"),
+            "metrics_json": metrics or {},
+        }
+    )
 
 
 def _write_task_ledger(result_db, recipe_id: str, experiment_id: str | None, ledger_dir: Path) -> tuple[Path, Path] | None:
@@ -769,10 +797,16 @@ def _import_swe_lego_results(args: argparse.Namespace) -> None:
         print(f"[train] Recipe ID: {context['recipe_id']}")
         print(f"[train] Experiment ID: {context['experiment_id']}")
 
+        expected_seeds = (
+            context["recipe"].get("eval", {}).get("seeds", [])
+            if isinstance(context["recipe"], dict)
+            else []
+        )
         imported = import_results(
             bundle_dir,
             recipe_id=context["recipe_id"],
             experiment_id=context["experiment_id"],
+            expected_seeds=expected_seeds,
         )
         train_result = _coerce_import_train_result(
             imported,
@@ -791,11 +825,7 @@ def _import_swe_lego_results(args: argparse.Namespace) -> None:
             "eval": [result.__dict__ for result in eval_results],
             "recipe": context["recipe"],
             "ablation": context["recipe"].get("ablation", []) if isinstance(context["recipe"], dict) else [],
-            "expected_seeds": (
-                context["recipe"].get("eval", {}).get("seeds", [])
-                if isinstance(context["recipe"], dict)
-                else []
-            ),
+            "expected_seeds": expected_seeds,
             "status": train_result.status,
             "trainer_type": context["trainer_type"],
             "backend": context["backend"],
@@ -842,7 +872,14 @@ def _import_swe_lego_results(args: argparse.Namespace) -> None:
                 "reasoning": verdict.reasoning,
                 "checks_json": verdict.checks,
                 "suggestions_json": verdict.suggestions,
+                "research_suggestions_json": verdict.research_suggestions,
             }
+        )
+        _persist_ablation_record(
+            db,
+            context["recipe"],
+            context["experiment_id"],
+            summary_metrics,
         )
 
         _mark_external_execution_tasks_completed(
@@ -1504,8 +1541,15 @@ def run_train(args: argparse.Namespace) -> None:
                         "reasoning": verdict.reasoning,
                         "checks_json": verdict.checks,
                         "suggestions_json": verdict.suggestions,
+                        "research_suggestions_json": verdict.research_suggestions,
                     }
                 )
+            _persist_ablation_record(
+                db,
+                recipe,
+                experiment_id,
+                summary_metrics,
+            )
 
             tasks = _post_train_tasks(
                 recipe_id=recipe_id,

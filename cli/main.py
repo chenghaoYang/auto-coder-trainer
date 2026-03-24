@@ -33,6 +33,16 @@ def main():
     compose_parser = subparsers.add_parser("compose", help="Compose method atoms into a training recipe")
     compose_parser.add_argument("--atoms", type=str, required=True, help="Comma-separated method atom names")
     compose_parser.add_argument("--model", type=str, default="Qwen/Qwen2.5-Coder-7B-Instruct", help="Base model")
+    compose_parser.add_argument(
+        "--trainer-type",
+        choices=["sft", "rl", "grpo", "distill", "dpo"],
+        help="Override the composed trainer type",
+    )
+    compose_parser.add_argument(
+        "--backend",
+        choices=["trl", "verl", "tinyzero", "openr1", "agent_distill", "redi", "swe_lego"],
+        help="Override the composed backend",
+    )
     compose_parser.add_argument("--output", type=str, help="Output recipe path")
 
     # train

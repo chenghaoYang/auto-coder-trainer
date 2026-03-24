@@ -3,9 +3,9 @@
 Usage:
     act pipeline --query "coding agent training" --model Qwen/Qwen2.5-Coder-7B-Instruct
     act pipeline --recipe recipes/examples/baseline-sft.recipe.json
-    act pipeline --recipe recipe.json --auto --max-iterations 3
+    act pipeline --recipe recipe.json --max-iterations 3
 
-The pipeline chains: collect → compose → train → evaluate → judge → report.
+The pipeline chains: collect → compose → train/observe → judge → report.
 After the judge verdict, it auto-decides:
   - ACCEPT       → generate final blog-style report, done.
   - NEEDS_RERUN  → re-run missing seeds or full experiment.
@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -91,9 +90,9 @@ def _run_train(recipe_path: Path, output_dir: str, *, dry_run: bool = False) -> 
         db = ResultDB()
         db.connect()
         try:
-            experiments = db.find_by_recipe(recipe_id)
-            if experiments:
-                return experiments[-1]["id"]
+            latest_experiment = _get_latest_experiment(recipe_id, db=db)
+            if latest_experiment:
+                return latest_experiment["id"]
         finally:
             db.close()
     except Exception:
@@ -126,8 +125,55 @@ def _run_report(
     return report_path if report_path.exists() else None
 
 
+def _coerce_verdict_payload(verdict: dict[str, Any], *, experiment_id: str | None = None) -> dict[str, Any]:
+    """Normalize verdict payloads read from the DB."""
+    payload = dict(verdict)
+    if (
+        "research_suggestions" not in payload
+        and "research_suggestions_json" in payload
+    ):
+        payload["research_suggestions"] = payload.get("research_suggestions_json")
+    if experiment_id is not None:
+        payload["experiment_id"] = experiment_id
+    return payload
+
+
+def _get_latest_experiment(recipe_id: str, *, db=None) -> dict[str, Any] | None:
+    """Return the newest experiment tracked for a recipe."""
+    owns_db = False
+    if db is None:
+        from results.db import ResultDB
+        db = ResultDB()
+        db.connect()
+        owns_db = True
+    try:
+        experiments = db.find_by_recipe(recipe_id)
+        return experiments[0] if experiments else None
+    finally:
+        if owns_db:
+            db.close()
+
+
+def _get_experiment_verdict(experiment_id: str | None, *, db=None) -> dict[str, Any] | None:
+    """Return the newest verdict for a specific experiment."""
+    if not experiment_id:
+        return None
+    owns_db = False
+    if db is None:
+        from results.db import ResultDB
+        db = ResultDB()
+        db.connect()
+        owns_db = True
+    try:
+        verdict = db.get_latest_verdict(experiment_id)
+        return _coerce_verdict_payload(verdict, experiment_id=experiment_id) if verdict else None
+    finally:
+        if owns_db:
+            db.close()
+
+
 def _get_latest_verdict(recipe_id: str) -> dict[str, Any] | None:
-    """Query the DB for the latest judge verdict on a recipe."""
+    """Query the DB for the newest available judge verdict on a recipe."""
     try:
         from results.db import ResultDB
         db = ResultDB()
@@ -136,10 +182,11 @@ def _get_latest_verdict(recipe_id: str) -> dict[str, Any] | None:
             experiments = db.find_by_recipe(recipe_id)
             if not experiments:
                 return None
-            exp_id = experiments[-1]["id"]
-            verdict = db.get_latest_verdict(exp_id)
-            if verdict:
-                return dict(verdict)
+            for experiment in experiments:
+                exp_id = experiment["id"]
+                verdict = db.get_latest_verdict(exp_id)
+                if verdict:
+                    return _coerce_verdict_payload(verdict, experiment_id=exp_id)
         finally:
             db.close()
     except Exception:
@@ -193,7 +240,7 @@ def _has_research_suggestions(verdict: dict[str, Any] | None) -> bool:
     """Check whether the verdict carries actionable research suggestions."""
     if verdict is None:
         return False
-    suggestions = verdict.get("research_suggestions", [])
+    suggestions = verdict.get("research_suggestions", verdict.get("research_suggestions_json", []))
     if not isinstance(suggestions, list):
         return False
     for entry in suggestions:
@@ -207,7 +254,8 @@ def _has_research_suggestions(verdict: dict[str, Any] | None) -> bool:
 def _extract_research_queries(verdict: dict[str, Any]) -> list[dict[str, Any]]:
     """Pull the query dicts out of research_suggestions."""
     queries: list[dict[str, Any]] = []
-    for entry in verdict.get("research_suggestions", []):
+    suggestions = verdict.get("research_suggestions", verdict.get("research_suggestions_json", []))
+    for entry in suggestions:
         if isinstance(entry, dict) and entry.get("type") == "research_queries":
             queries.extend(entry.get("queries", []))
     return queries
@@ -311,17 +359,28 @@ def run_pipeline(args: argparse.Namespace) -> None:
     recipe_id = recipe.get("id", "unknown")
 
     # ------------------------------------------------------------------
-    # Phase 3+: Train → Judge → Decide loop
+    # Phase 3+: Train / Observe → Judge → Decide loop
     # ------------------------------------------------------------------
+    pending_train = True
+    experiment_id: str | None = None
     for iteration in range(1, max_iterations + 1):
-        print(f"\n[pipeline] {'='*60}")
-        print(f"[pipeline] === Phase 3: TRAIN (iteration {iteration}/{max_iterations}) ===")
-        print(f"[pipeline] {'='*60}")
+        if pending_train:
+            print(f"\n[pipeline] {'='*60}")
+            print(f"[pipeline] === Phase 3: TRAIN (iteration {iteration}/{max_iterations}) ===")
+            print(f"[pipeline] {'='*60}")
+            experiment_id = _run_train(recipe_path, output_dir, dry_run=dry_run)
+        else:
+            print(f"\n[pipeline] {'='*60}")
+            print(f"[pipeline] === Phase 3: OBSERVE (iteration {iteration}/{max_iterations}) ===")
+            print(f"[pipeline] {'='*60}")
+            print("[pipeline] Inspecting the latest dispatched experiment state.")
 
-        experiment_id = _run_train(recipe_path, output_dir, dry_run=dry_run)
+        latest_experiment = _get_latest_experiment(recipe_id)
+        if latest_experiment is not None:
+            experiment_id = latest_experiment["id"]
 
-        # Get judge verdict
-        verdict = _get_latest_verdict(recipe_id)
+        # Get judge verdict for the newest experiment only
+        verdict = _get_experiment_verdict(experiment_id)
         verdict_value = verdict.get("verdict", "unknown") if verdict else "no_verdict"
         print(f"\n[pipeline] Judge verdict: {verdict_value}")
 
@@ -348,6 +407,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
             print(f"[pipeline]   act status --recipe-id {recipe_id} --slurm   # live SLURM status")
             print(f"[pipeline]   act sync --recipe-id {recipe_id}             # import results when done")
             return
+        if verdict is None and not pending_train:
+            print("[pipeline] No verdict is available yet for the latest experiment.")
+            print("[pipeline] Stop here and use `act status` / `act sync` to continue the loop.")
+            return
 
         # Decide next action
         action = _decide_next_action(verdict)
@@ -368,7 +431,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
             print(f"[pipeline] === RERUN (dispatching pending tasks) ===")
             print(f"[pipeline] {'='*60}")
             _run_rerun(recipe_id, dry_run=dry_run)
-            # Continue to next iteration
+            pending_train = False
+            continue
 
         elif action == "research_and_retry":
             print(f"\n[pipeline] {'='*60}")
@@ -418,14 +482,18 @@ def run_pipeline(args: argparse.Namespace) -> None:
             else:
                 print("[pipeline] No research queries available, falling back to rerun")
                 _run_rerun(recipe_id, dry_run=dry_run)
-            # Continue to next iteration (Phase C: train loop continues)
+                pending_train = False
+                continue
+            pending_train = True
+            continue
 
         elif action == "ablation":
             print(f"\n[pipeline] {'='*60}")
             print(f"[pipeline] === ABLATION (running missing variants) ===")
             print(f"[pipeline] {'='*60}")
             _run_rerun(recipe_id, dry_run=dry_run)
-            # Continue to next iteration
+            pending_train = False
+            continue
 
         elif action in ("stop", "report_and_stop"):
             print(f"\n[pipeline] {'='*60}")
