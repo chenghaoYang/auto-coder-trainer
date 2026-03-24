@@ -21,7 +21,8 @@ from trainers.swe_lego.model_registry import ModelProfile, resolve_model_profile
 # ---------------------------------------------------------------------------
 
 _SWE_LEGO_SUBDIR = Path("trainers/swe_lego/SWE-Lego")
-_LLAMA_FACTORY_SUBDIR = _SWE_LEGO_SUBDIR / "LLaMA-Factory-0.9.4.dev0"
+_DEFAULT_LLAMA_FACTORY_VERSION = "0.9.4.dev0"
+_LLAMA_FACTORY_SUBDIR = _SWE_LEGO_SUBDIR / f"LLaMA-Factory-{_DEFAULT_LLAMA_FACTORY_VERSION}"
 _DEEPSPEED_DIR = "examples/deepspeed"
 
 _DS_CONFIGS: dict[str, str] = {
@@ -81,6 +82,12 @@ def build_swe_lego_launcher_bundle(
         "ACT_GPU_COUNT": gpu_count,
     }
 
+    # Resolve model profile for dependency checks
+    model_profile = resolve_model_profile(
+        model_cfg.get("base", "Qwen/Qwen3-8B"),
+        overrides=training_params.get("model_profile_overrides"),
+    )
+
     warnings: list[str] = []
     if not data_cfg.get("sources"):
         warnings.append(
@@ -97,6 +104,9 @@ def build_swe_lego_launcher_bundle(
             "ds_z2_offload_config.json is intended for single-GPU. "
             "Consider z3 for multi-GPU setups."
         )
+
+    # Dependency version warnings based on model profile
+    warnings.extend(_check_dep_versions(model_profile))
 
     yaml_file = bundle_dir / "train_config.yaml"
     dataset_info_file = bundle_dir / "dataset_info_patch.json"
@@ -463,3 +473,52 @@ def _default_gpu_count(budget: dict[str, Any]) -> str:
         if maybe_count.isdigit():
             return maybe_count
     return "1"
+
+
+def _check_dep_versions(profile: ModelProfile) -> list[str]:
+    """Check installed dependency versions against model profile requirements.
+
+    Returns a list of warning strings for unmet dependencies.
+    """
+    warnings: list[str] = []
+    _DEP_CHECKS = [
+        ("transformers", profile.min_llamafactory_version, "LLaMA-Factory"),
+        ("vllm", profile.min_vllm_version, "vLLM"),
+    ]
+    # Only check transformers (always available) and vllm (optional)
+    try:
+        import importlib.metadata as _meta
+    except ImportError:
+        return warnings
+
+    for pkg, check_field, label in [
+        ("transformers", "min_llamafactory_version", "LLaMA-Factory"),
+    ]:
+        # For LLaMA-Factory, we check the transformers version as a proxy
+        # since LLaMA-Factory 0.9.5 requires transformers >= 4.52.0
+        if profile.min_llamafactory_version > "0.9.4":
+            try:
+                ver = _meta.version("transformers")
+                if ver < "4.52.0":
+                    warnings.append(
+                        f"Qwen3.5 requires transformers >= 4.52.0 (installed: {ver}). "
+                        f"Upgrade with: pip install 'transformers>=4.52.0'"
+                    )
+            except _meta.PackageNotFoundError:
+                pass
+
+    if profile.min_vllm_version > "0.16.0":
+        try:
+            ver = _meta.version("vllm")
+            if ver < profile.min_vllm_version:
+                warnings.append(
+                    f"Qwen3.5 requires vllm >= {profile.min_vllm_version} (installed: {ver}). "
+                    f"Upgrade with: pip install 'vllm>={profile.min_vllm_version}'"
+                )
+        except _meta.PackageNotFoundError:
+            warnings.append(
+                f"vLLM not installed. Qwen3.5 inference requires vllm >= {profile.min_vllm_version}. "
+                f"Install with: pip install 'vllm>={profile.min_vllm_version}'"
+            )
+
+    return warnings
