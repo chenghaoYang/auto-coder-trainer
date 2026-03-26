@@ -104,3 +104,33 @@ def test_run_swe_lego_pipeline_submits_import_stage(
     assert "import_results" in result["job_ids"]
     assert any(path.name == "import_results.sbatch" for path in written_scripts)
     assert ("import_results.sbatch", "103", "afterok") in submit_calls
+
+
+def test_run_single_script_pipeline_submits_one_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "run.sh").write_text("#!/usr/bin/env bash\necho hi\n")
+
+    written_paths: list[Path] = []
+
+    def _fake_write(content: str, output_path: Path) -> Path:
+        output_path.write_text(content)
+        written_paths.append(output_path)
+        return output_path
+
+    monkeypatch.setattr(submitter, "write_sbatch_script", _fake_write)
+    monkeypatch.setattr(submitter, "submit_job", lambda _path: "777")
+
+    result = submitter.run_single_script_pipeline(
+        bundle_dir,
+        _default_slurm_config(),
+        backend="tinyzero",
+        script_name="run.sh",
+        stage="train",
+    )
+
+    assert result["job_ids"] == {"train": "777"}
+    assert any(path.name == "tinyzero-train.sbatch" for path in written_paths)

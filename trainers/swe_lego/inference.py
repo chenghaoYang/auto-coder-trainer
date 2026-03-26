@@ -182,6 +182,8 @@ def build_eval_script(
             ]
         )
 
+    joined_blocks = "\n".join(blocks).rstrip()
+
     return f"""\
 #!/usr/bin/env bash
 set -euo pipefail
@@ -191,7 +193,7 @@ set -euo pipefail
 SWE_LEGO_ROOT={swe_lego_root}
 DATASET={shlex.quote(dataset)}
 DATASET_SPLIT=test
-{"\n".join(blocks).rstrip()}
+{joined_blocks}
 """
 
 

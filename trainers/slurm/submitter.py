@@ -453,3 +453,48 @@ def run_swe_lego_pipeline(
         "job_ids": job_ids,
         "bundle_dir": str(bundle_dir),
     }
+
+
+def run_single_script_pipeline(
+    bundle_dir: Union[str, Path],
+    slurm_config: Dict[str, object],
+    *,
+    backend: str,
+    script_name: str = "run.sh",
+    stage: str = "train",
+) -> Dict[str, object]:
+    """Submit a single launcher script as one SLURM job.
+
+    This is used for external backends that only need a single stage
+    (for example TinyZero's generated ``run.sh``).
+    """
+    bundle_dir = Path(bundle_dir).resolve()
+    slurm_dir = bundle_dir / "slurm"
+    slurm_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = {**slurm_config, "bundle_dir": str(bundle_dir)}
+    pipeline_id = uuid.uuid4().hex[:12]
+
+    recipe_id = bundle_dir.parent.name
+    job_name = f"act-{recipe_id}-{backend}-{stage}"
+    script_path = bundle_dir / script_name
+    if not script_path.exists():
+        raise FileNotFoundError(f"Script not found for SLURM submission: {script_path}")
+
+    sbatch_content = render_sbatch(
+        job_name=job_name,
+        run_script=script_name,
+        slurm_config=cfg,
+        log_dir=slurm_dir,
+    )
+    sbatch_path = write_sbatch_script(
+        sbatch_content,
+        slurm_dir / f"{backend}-{stage}.sbatch",
+    )
+    job_id = submit_job(sbatch_path)
+
+    return {
+        "pipeline_id": pipeline_id,
+        "job_ids": {stage: job_id},
+        "bundle_dir": str(bundle_dir),
+    }

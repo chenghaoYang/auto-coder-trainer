@@ -386,9 +386,10 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
         if verdict is None and _is_waiting_on_external_execution(recipe_id, experiment_id):
             print(f"\n[pipeline] {'='*60}")
-            print("[pipeline] SLURM pipeline submitted — training is running asynchronously.")
+            print("[pipeline] External execution is still in progress.")
             print(f"[pipeline] {'='*60}")
             # Show tracked SLURM jobs if available
+            has_slurm_jobs = False
             try:
                 from results.db import ResultDB
                 _db = ResultDB()
@@ -396,6 +397,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 try:
                     slurm_jobs = _db.get_slurm_jobs(recipe_id=recipe_id)
                     if slurm_jobs:
+                        has_slurm_jobs = True
                         for sj in slurm_jobs:
                             print(f"[pipeline]   {sj.get('stage', '?'):20s}  "
                                   f"job {sj.get('job_id', '?'):>10s}  {sj.get('status', '?')}")
@@ -404,8 +406,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
             except Exception:
                 pass
             print(f"\n[pipeline] Next steps:")
-            print(f"[pipeline]   act status --recipe-id {recipe_id} --slurm   # live SLURM status")
-            print(f"[pipeline]   act sync --recipe-id {recipe_id}             # import results when done")
+            if has_slurm_jobs:
+                print(f"[pipeline]   act status --recipe-id {recipe_id} --slurm   # live SLURM status")
+                print(f"[pipeline]   act sync --recipe-id {recipe_id}             # import results when done")
+            else:
+                print(f"[pipeline]   act status --recipe-id {recipe_id}           # check pending execution tasks")
+                print(f"[pipeline]   act rerun --recipe-id {recipe_id}            # dispatch pending tasks")
             return
         if verdict is None and not pending_train:
             print("[pipeline] No verdict is available yet for the latest experiment.")

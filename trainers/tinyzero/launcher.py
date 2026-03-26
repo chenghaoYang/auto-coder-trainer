@@ -115,6 +115,8 @@ def build_tinyzero_launcher_bundle(
             "env": str(env_file),
             "run_script": str(run_file),
             "launcher_json": str(bundle_dir / "launcher.json"),
+            "train_log": str(bundle_dir / "results" / "train.log"),
+            "train_exit_code": str(bundle_dir / "results" / "train_exit_code.txt"),
         },
     }
 
@@ -310,10 +312,19 @@ def _render_run_script(bundle: dict[str, Any]) -> str:
             "",
             'ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
             'source "$ROOT_DIR/env.sh"',
+            'RESULTS_DIR="$ROOT_DIR/results"',
+            'mkdir -p "$RESULTS_DIR"',
             "",
             'mapfile -t HYDRA_OVERRIDES < <(grep -v "^[[:space:]]*$" "$ROOT_DIR/hydra-overrides.txt")',
             "",
-            f"{command_prefix} \"${{HYDRA_OVERRIDES[@]}}\" \"$@\"",
+            'set +e',
+            f"{command_prefix} \"${{HYDRA_OVERRIDES[@]}}\" \"$@\" 2>&1 | tee \"$RESULTS_DIR/train.log\"",
+            'CMD_RC=${PIPESTATUS[0]}',
+            'set -e',
+            'echo "$CMD_RC" > "$RESULTS_DIR/train_exit_code.txt"',
+            'if [[ "$CMD_RC" -ne 0 ]]; then',
+            '  exit "$CMD_RC"',
+            'fi',
             "",
         ]
     )

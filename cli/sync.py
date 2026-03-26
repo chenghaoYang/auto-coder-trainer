@@ -81,11 +81,14 @@ def _import_completed_pipeline(
     """Import results for a completed SLURM pipeline. Returns True on success."""
     experiment_id = jobs[0].get("experiment_id", "?")
     recipe_id = jobs[0].get("recipe_id", "?")
+    experiment = db.get_experiment(experiment_id)
+    backend = experiment.get("backend") if isinstance(experiment, dict) else None
     bundle_dir = jobs[0].get("bundle_dir")
 
     if not bundle_dir:
         # Try to derive from convention
-        bundle_dir = f"outputs/{recipe_id}/swe_lego"
+        backend_dir = backend or "swe_lego"
+        bundle_dir = f"outputs/{recipe_id}/{backend_dir}"
 
     bundle_path = Path(bundle_dir)
     if not bundle_path.exists():
@@ -99,7 +102,7 @@ def _import_completed_pipeline(
 
     # Reuse the import logic from cli/train.py
     try:
-        from cli.train import _import_swe_lego_results
+        from cli.train import _import_external_results
 
         import_args = argparse.Namespace(
             import_results=str(bundle_path),
@@ -107,8 +110,9 @@ def _import_completed_pipeline(
             experiment_id=experiment_id,
             report_format=report_format,
             report_output=None,
+            backend=backend,
         )
-        _import_swe_lego_results(import_args)
+        _import_external_results(import_args)
         return True
     except Exception as exc:
         print(f"[sync]   Error importing results: {exc}")

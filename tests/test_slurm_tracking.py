@@ -182,3 +182,66 @@ class TestSyncCommand:
 
         captured = capsys.readouterr().out
         assert "No tracked SLURM jobs found" in captured
+
+    def test_import_completed_pipeline_dispatches_tinyzero_backend(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        from cli.sync import _import_completed_pipeline
+
+        db_path = tmp_path / "sync_dispatch.db"
+        rdb = ResultDB(db_path)
+        rdb.connect()
+        try:
+            rdb.insert_experiment(
+                {
+                    "id": "exp-tinyzero-sync-1",
+                    "recipe_id": "recipe-tinyzero-sync-1",
+                    "config_hash": "hash-sync-1",
+                    "status": "running",
+                    "trainer_type": "sft",
+                    "backend": "tinyzero",
+                    "model_base": "Qwen/Qwen2.5-Coder-7B-Instruct",
+                    "metrics_json": {},
+                    "train_metrics_json": {},
+                    "recipe_json": {"id": "recipe-tinyzero-sync-1"},
+                    "budget_json": {},
+                    "checkpoint_path": None,
+                    "error": None,
+                }
+            )
+
+            bundle_dir = tmp_path / "bundle" / "tinyzero"
+            bundle_dir.mkdir(parents=True)
+            (bundle_dir / "launcher.json").write_text('{"backend":"tinyzero"}')
+
+            called = {}
+
+            import cli.train as train_mod
+
+            def _fake_import(args):
+                called["backend"] = getattr(args, "backend", None)
+                called["bundle"] = getattr(args, "import_results", None)
+
+            monkeypatch.setattr(train_mod, "_import_external_results", _fake_import)
+
+            ok = _import_completed_pipeline(
+                [
+                    {
+                        "experiment_id": "exp-tinyzero-sync-1",
+                        "recipe_id": "recipe-tinyzero-sync-1",
+                        "bundle_dir": str(bundle_dir),
+                        "status": "COMPLETED",
+                    }
+                ],
+                rdb,
+                report_format="blog",
+                dry_run=False,
+            )
+        finally:
+            rdb.close()
+
+        assert ok is True
+        assert called["backend"] == "tinyzero"
+        assert called["bundle"] == str(bundle_dir)

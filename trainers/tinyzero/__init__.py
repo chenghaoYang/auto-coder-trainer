@@ -9,8 +9,10 @@ from trainers.tinyzero.launcher import (
     build_tinyzero_launcher_bundle,
     write_tinyzero_launcher_bundle,
 )
+from trainers.tinyzero.results_bridge import import_results as import_tinyzero_results
 
 __all__ = [
     "build_tinyzero_launcher_bundle",
     "write_tinyzero_launcher_bundle",
+    "import_tinyzero_results",
 ]

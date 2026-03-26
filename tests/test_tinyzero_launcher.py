@@ -4,6 +4,7 @@ from pathlib import Path
 
 from cli.train import run_train
 from recipes.compiler import compile_recipe, load_schema, validate_recipe
+from results.db import ResultDB
 from trainers.tinyzero import build_tinyzero_launcher_bundle, write_tinyzero_launcher_bundle
 
 
@@ -78,3 +79,66 @@ def test_train_prepares_tinyzero_bundle_and_execution_plan(tmp_path: Path, capsy
     assert plan["mode"] == "prepared"
     assert plan["launcher"]["backend"] == "tinyzero"
     assert Path(plan["launcher"]["files"]["run_script"]).exists()
+
+
+def test_train_tinyzero_with_slurm_submits_and_tracks_jobs(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    import trainers.slurm.submitter as submitter
+
+    recipe = _tinyzero_sft_recipe()
+    recipe["budget"] = {
+        "slurm": {
+            "partition": "gpu",
+            "nodes": 1,
+            "gpus_per_node": 1,
+            "cpus_per_task": 8,
+            "mem": "64G",
+            "time": "01:00:00",
+        }
+    }
+    recipe_path = tmp_path / "tinyzero-slurm.recipe.json"
+    recipe_path.write_text(json.dumps(recipe, indent=2))
+
+    db_path = tmp_path / "results.db"
+    monkeypatch.setenv("ACT_RESULTS_DB", str(db_path))
+
+    monkeypatch.setattr(
+        submitter,
+        "run_single_script_pipeline",
+        lambda bundle_dir, slurm_cfg, backend, script_name="run.sh", stage="train": {
+            "pipeline_id": "pipe-tinyzero-1",
+            "job_ids": {"train": "90001"},
+            "bundle_dir": str(bundle_dir),
+        },
+    )
+
+    output_dir = tmp_path / "outputs"
+    run_train(
+        Namespace(
+            recipe=str(recipe_path),
+            output_dir=str(output_dir),
+            dry_run=False,
+            no_submit=False,
+            import_results=None,
+        ),
+    )
+
+    captured = capsys.readouterr().out
+    assert "TinyZero SLURM pipeline submitted" in captured
+    assert "Status     : running" in captured
+
+    db = ResultDB(db_path)
+    db.connect()
+    try:
+        experiments = db.find_by_recipe(recipe["id"])
+        assert len(experiments) == 1
+        assert experiments[0]["status"] == "running"
+        jobs = db.get_slurm_jobs(recipe_id=recipe["id"])
+        assert len(jobs) == 1
+        assert jobs[0]["job_id"] == "90001"
+        assert jobs[0]["stage"] == "train"
+    finally:
+        db.close()
