@@ -1,4 +1,4 @@
-.PHONY: collect compose train report status install dev test clean help validate-schema benchmark-quick benchmark-standard benchmark-full result-card swe-lego swe-lego-dry swe-lego-import
+.PHONY: collect compose train report status install dev test clean help validate-schema benchmark-quick benchmark-standard benchmark-full result-card swe-lego swe-lego-dry swe-lego-import format check
 
 PYTHON ?= python3
 
@@ -30,6 +30,13 @@ status: ## Show tracked experiments and open tasks (usage: make status RECIPE_ID
 	$(PYTHON) -m cli.main status $(if $(RECIPE_ID),--recipe-id "$(RECIPE_ID)",)
 
 test: ## Run tests
+	$(PYTHON) -m pytest tests/ -v
+
+format: ## Auto-format code with ruff
+	$(PYTHON) -m ruff format . && $(PYTHON) -m ruff check --fix .
+
+check: ## Run all checks (lint + test)
+	$(PYTHON) -m ruff check .
 	$(PYTHON) -m pytest tests/ -v
 
 validate-schema: ## Validate example recipes against schema

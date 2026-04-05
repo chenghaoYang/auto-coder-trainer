@@ -29,6 +29,14 @@ This project runs across **two environments**:
 
 **Key implication**: when Claude Code runs `act train`, `sbatch`, `squeue`, or reads SLURM logs, these commands run on `torch` directly. No SSH wrapping needed — VS Code Remote-SSH handles the transport.
 
+## First Session Checklist
+
+> 每个新会话的 agent 应在开始时执行以下步骤：
+1. 读取本文件 (CLAUDE.md)
+2. 读取 PROGRESS.md 了解当前进度
+3. 运行 `act status --open-only` 查看待办任务
+4. 运行 `make check` 确认代码库状态健康
+
 ## Quick Reference
 
 ```bash
@@ -66,6 +74,17 @@ Recipe JSON (bridge between research & training)
 
 **Native backends** (trl, verl): train directly in-process.
 **Launcher backends** (swe_lego, tinyzero, openr1, etc.): generate shell scripts + configs → submit via SLURM.
+
+## Hard Constraints
+
+> 以下规则不可违反，任何修改都必须遵守：
+
+1. **所有 CLI 命令通过 `act` 入口**：不直接调用 trainers/ 下的模块
+2. **Recipe 变更需通过 schema 验证**：修改 recipe 后必须跑 `make validate-schema`
+3. **DB 操作通过 results/db.py**：不直接写 SQL 操作 results.db
+4. **本地环境不跑 GPU 训练**：训练命令只在远程 torch 上执行
+5. **新增 trainer 必须注册到 registry**：`trainers/registry.py` 是唯一调度入口
+6. **测试不能依赖外部服务**：需要 SWE-bench/vLLM 的测试用 `pytest.importorskip` 跳过
 
 ## Recipe Format
 
@@ -195,12 +214,34 @@ act train --import-results /path/to/completed/bundle \
 3. Check task ledger: `outputs/<recipe-id>/task-ledger.md`
 4. Query DB for error: `sqlite3 data/results.db "SELECT error FROM experiments WHERE recipe_id='<id>'"`
 
+## Verification Commands
+
+> agent 在完成任何修改后应运行以下命令确认状态：
+
+```bash
+# Lint 检查
+ruff check .
+
+# 自动格式化检查
+ruff format . --check
+
+# 运行全部测试
+pytest tests/ -v
+
+# Schema 验证
+make validate-schema
+
+# 完整验证（lint + test）
+make check
+```
+
 ## Testing
 
 ```bash
-pytest                          # Run all tests
-pytest tests/test_cli_pipeline.py -v   # Pipeline tests
-pytest tests/test_swe_lego_launcher.py # SWE-Lego tests
+pytest tests/ -v                              # Run all tests
+pytest tests/test_cli_pipeline.py -v          # Pipeline tests
+pytest tests/test_swe_lego_launcher.py -v     # SWE-Lego tests
+pytest tests/ -k "not swe_lego" -v            # Skip SWE-Lego (needs remote)
 ```
 
 ## Environment Setup (on ssh torch)

@@ -1,15 +1,28 @@
 {
   "permissions": {
     "allow": [
-      "Bash(grep -n \"getattr\\(args\" /Users/yangchenghao/Desktop/auto-coder-trainer/cli/*.py)",
-      "Bash(grep -r \"evaluators.runner\\\\|from evaluators.runner\\\\|import.*runner\" /Users/yangchenghao/Desktop/auto-coder-trainer --include=*.py)",
-      "Bash(grep -n \"unused\\\\|TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" /Users/yangchenghao/Desktop/auto-coder-trainer/cli/*.py)",
-      "Bash(grep -n \"from evaluators\\\\|import evaluators\" /Users/yangchenghao/Desktop/auto-coder-trainer/trainers/*.py /Users/yangchenghao/Desktop/auto-coder-trainer/trainers/*/*.py)",
-      "Bash(python -m pytest tests/ -v)",
-      "Bash(python -m pytest tests/ -v --tb=short)",
-      "Bash(python -c \"from recipes.compiler import load_schema, validate_recipe, compile_recipe, normalize_recipe; import json; schema = load_schema\\(\\); recipe = json.load\\(open\\(''recipes/examples/baseline-sft.recipe.json''\\)\\); recipe = normalize_recipe\\(recipe\\); errs = validate_recipe\\(recipe, schema\\); print\\(''Schema validation errors:'', errs\\); cfg = compile_recipe\\(recipe\\); print\\(''Compiled:'', cfg.recipe_id, cfg.trainer_type, cfg.backend\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''cli/rerun.py''\\).read\\(\\)\\); print\\(''cli/rerun.py: OK''\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''cli/main.py''\\).read\\(\\)\\); print\\(''cli/main.py: OK''\\)\")"
+      "Bash(python *)",
+      "Bash(pip *)",
+      "Bash(git *)",
+      "Bash(pytest *)",
+      "Bash(ruff *)",
+      "Bash(make *)",
+      "Bash(act *)",
+      "Bash(sqlite3 data/results.db *)",
+      "Bash(squeue *)",
+      "Bash(sacct *)",
+      "Bash(scancel *)",
+      "Bash(sbatch *)",
+      "Bash(cat outputs/*)",
+      "Bash(ls *)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(mkdir *)",
+      "Bash(rm *)",
+      "Bash(echo *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)"
     ]
   }
 }

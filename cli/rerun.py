@@ -62,7 +62,7 @@ def _set_nested_value(document: dict[str, Any], path: str, value: Any) -> None:
         if not isinstance(next_value, dict):
             next_value = {}
             cursor[part] = next_value
-    cursor = next_value
+        cursor = next_value
     cursor[parts[-1]] = value
 
 

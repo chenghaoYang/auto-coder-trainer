@@ -11,14 +11,12 @@ import json
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Any
 
 from trainers.base import BaseTrainer, TrainResult, EvalResult
 from trainers.rl.reward import build_reward, BaseReward
 from trainers.rl.data import load_rl_prompts, setup_rollout_env
 from trainers.utils.checkpoint import save_checkpoint
-from trainers.utils.lora import apply_lora
 from trainers.utils.seeds import set_all_seeds
 
 logger = logging.getLogger(__name__)
