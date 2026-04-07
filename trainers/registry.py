@@ -109,5 +109,12 @@ def _register_builtins() -> None:
     except ImportError:
         pass
 
+    try:
+        from trainers.ssd.launcher import SSDLauncher
+        register("ssd", None, SSDLauncher)
+        register("ssd", "ssd", SSDLauncher)
+    except ImportError:
+        pass
+
 
 _register_builtins()

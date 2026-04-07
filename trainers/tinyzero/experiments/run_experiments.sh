@@ -262,37 +262,42 @@ case "$EXP_ID" in
     # 1a: GRPO baseline (no offload, tiny vLLM footprint for 1×A100 80GB)
     run_grpo "exp01_grpo" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
         32 1 4 1e-6 5 1.0 0.001 0.2 512 512 False
-    # 1b: PPO baseline
+    # 1b: PPO baseline (must offload — GRPO alone uses 77.7GB, critic needs CPU offload)
     run_ppo "exp01_ppo" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
-        16 1 1e-6 5 1.0 0.001 0.15 512 512 False
+        16 1 1e-6 5 1.0 0.001 0.15 512 512 True
     ;;
 
 # ---- Experiment 02: FP8 Quantization ----
+# NOTE: 7B OOMs on 1×A100 (vLLM can't allocate KV cache even with offload).
+# Using 3B instead — experiment still tests FP8 vs BF16 impact.
 02)
-    # 2a: BF16 full precision (7B, must offload for 1×A100)
-    run_grpo "exp02_bf16" "$M_7B" "$GSM_TRAIN" "$GSM_TEST" \
-        32 1 4 1e-6 1 1.0 0.001 0.15 512 512 True
-    # 2b: FP8 rollout only (reduced gpu_util, offload actor)
-    run_grpo "exp02_fp8_rollout" "$M_7B" "$GSM_TRAIN" "$GSM_TEST" \
-        32 1 4 1e-6 1 1.0 0.001 0.15 512 512 True \
+    # 2a: BF16 full precision (3B baseline for quantization comparison)
+    run_grpo "exp02_bf16" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
+        32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False
+    # 2b: FP8 rollout only
+    run_grpo "exp02_fp8_rollout" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
+        32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False \
         actor_rollout_ref.rollout.dtype=fp8
     # 2c: FP8 end-to-end
-    run_grpo "exp02_fp8_e2e" "$M_7B" "$GSM_TRAIN" "$GSM_TEST" \
-        32 1 4 1e-6 1 1.0 0.001 0.15 512 512 True \
+    run_grpo "exp02_fp8_e2e" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
+        32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False \
         actor_rollout_ref.rollout.dtype=fp8 \
         actor_rollout_ref.model.dtype=fp8
     ;;
 
 # ---- Experiment 03: Data Scaling Law ----
 03)
+    # 6 sub-runs: use 15 steps each to fit in 4h
     for SIZE in 100 500 1000 2000 5000; do
         run_grpo "exp03_data_${SIZE}" "$M_3B" \
             "$DATA_DIR/gsm8k_train_${SIZE}.parquet" "$GSM_TEST" \
-            32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False
+            32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False \
+            trainer.total_training_steps=15
     done
     # Full 8K
     run_grpo "exp03_data_full" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
-        32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False
+        32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False \
+        trainer.total_training_steps=15
     ;;
 
 # ---- Experiment 04: Cross-task Transfer ----
@@ -341,9 +346,8 @@ patch_verl_reward('$RTYPE')
     # 3B
     run_grpo "exp06_3B" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
         32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False
-    # 7B (must offload for 1×A100)
-    run_grpo "exp06_7B" "$M_7B" "$GSM_TRAIN" "$GSM_TEST" \
-        32 1 4 1e-6 1 1.0 0.001 0.15 512 512 True
+    # 7B — OOMs on 1×A100, skip with warning
+    echo "[WARN] exp06_7B: skipped — 7B OOMs on 1×A100 (vLLM can't allocate KV cache)"
     ;;
 
 # ---- Experiment 07: KL Sensitivity (2 KL values × GRPO only, 2h cap) ----
@@ -373,14 +377,15 @@ patch_verl_reward('$RTYPE')
     ;;
 
 # ---- Experiment 10: LoRA vs Full Fine-tuning ----
+# NOTE: 7B OOMs on 1×A100. Using 3B instead — still tests LoRA vs Full.
 10)
-    # Full fine-tune (7B, must offload for 1×A100)
-    run_grpo "exp10_full" "$M_7B" "$GSM_TRAIN" "$GSM_TEST" \
-        32 1 4 1e-6 1 1.0 0.001 0.15 512 512 True
-    # LoRA variants (offload base model, LoRA adapter stays on GPU)
+    # Full fine-tune (3B baseline)
+    run_grpo "exp10_full" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
+        32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False
+    # LoRA variants on 3B
     for RANK in 8 16 32; do
-        run_grpo "exp10_lora_r${RANK}" "$M_7B" "$GSM_TRAIN" "$GSM_TEST" \
-            32 1 4 1e-6 1 1.0 0.001 0.15 512 512 True \
+        run_grpo "exp10_lora_r${RANK}" "$M_3B" "$GSM_TRAIN" "$GSM_TEST" \
+            32 1 4 1e-6 1 1.0 0.001 0.2 512 512 False \
             actor_rollout_ref.actor.lora.enabled=True \
             actor_rollout_ref.actor.lora.rank=$RANK \
             actor_rollout_ref.actor.lora.alpha=$((RANK * 2))

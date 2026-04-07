@@ -15,13 +15,13 @@ SLURM_EXP="$SCRIPT_DIR/experiment.slurm"
 LOG_DIR="/scratch/cy2668/auto-coder-trainer/outputs/tinyzero_experiments/logs"
 mkdir -p "$LOG_DIR"
 
-# Time limits per experiment (hours)
+# Time limits per experiment (hours) — tuned for multi-sub-run experiments
 declare -A TIME_LIMITS=(
-    [01]=2 [02]=2 [03]=2 [04]=2 [05]=2
-    [06]=2 [07]=2 [08]=2 [09]=2 [10]=2
-    [11]=2 [12]=2 [13]=2 [14]=2 [15]=2
-    [16]=2 [17]=2 [18]=2 [19]=2 [20]=2
-    [21]=2
+    [01]=3 [02]=2 [03]=4 [04]=3 [05]=3
+    [06]=3 [07]=2 [08]=3 [09]=3 [10]=3
+    [11]=2 [12]=2 [13]=4 [14]=3 [15]=2
+    [16]=2 [17]=2 [18]=2 [19]=3 [20]=2
+    [21]=3
 )
 
 # Experiment descriptions
