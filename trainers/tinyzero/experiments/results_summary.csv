@@ -1,0 +1,48 @@
+# 基线模型: Qwen2.5-3B  GSM8K baseline = 16.2%
+# 硬件: 1×A100 80GB  框架: veRL (GRPO)  训练步数: 15-30 steps
+实验编号,实验名称,子实验,GSM8K初始,GSM8K最终,状态,失败原因/备注
+01,PPO vs GRPO,exp01_grpo,16.2%,81.7%,OK,GRPO 跑通
+01,PPO vs GRPO,exp01_ppo,16.2%,-,OOM,PPO 需要 actor+critic 双模型 1×A100 不够
+02,FP8 量化,exp02_bf16,16.2%,82.3%,OK,BF16 基线跑通
+02,FP8 量化,exp02_fp8_rollout,-,-,FAILED,"ValueError: Unknown dtype: fp8 veRL 不支持 FP8"
+03,数据规模缩放,exp03_data_100,16.2%,76.5%,OK,
+03,数据规模缩放,exp03_data_500,16.2%,76.0%,OK,
+03,数据规模缩放,exp03_data_1000,16.2%,80.5%,OK,最佳性价比
+03,数据规模缩放,exp03_data_2000,16.2%,78.3%,OK,
+03,数据规模缩放,exp03_data_5000,16.2%,80.5%,OK,
+03,数据规模缩放,exp03_data_full,16.2%,80.5%,OK,1000 条后收益递减
+04,跨任务迁移,exp04_gsm8k_direct,16.2%,82.0%,OK,GSM8K 直接训练
+04,跨任务迁移,exp04_countdown,-,-,FAILED,Countdown 数据集不兼容
+05,奖励函数对比,exp05_reward_binary,16.2%,83.7%,OK,最佳奖励函数
+05,奖励函数对比,exp05_reward_partial,16.2%,81.3%,OK,
+05,奖励函数对比,exp05_reward_process,16.2%,80.7%,OK,
+06,模型规模缩放,exp06_0.5B,0.7%,31.2%,OK,太小学不好
+06,模型规模缩放,exp06_1.5B,1.9%,68.7%,OK,有一定能力
+06,模型规模缩放,exp06_3B,16.2%,82.9%,OK,最佳规模
+07,KL 敏感性,exp07_grpo_kl0p001,16.2%,81.7%,OK,
+07,KL 敏感性,exp07_grpo_kl0p01,16.2%,82.6%,OK,略好
+08,Rollout N,exp08_n2,16.2%,80.9%,OK,
+08,Rollout N,exp08_n4,16.2%,82.6%,OK,最佳性价比
+08,Rollout N,exp08_n8,16.2%,82.5%,OK,n=4 以上收益饱和
+08,Rollout N,exp08_n16,-,-,TIMEOUT,3h 不够
+09,温度,exp09_temp0p6,16.2%,80.5%,OK,
+09,温度,exp09_temp0p8,16.2%,79.9%,OK,
+09,温度,exp09_temp1p0,16.2%,81.4%,OK,
+09,温度,exp09_temp1p2,-,-,TIMEOUT,3h 不够
+10,LoRA vs Full,exp10_full,16.2%,82.4%,OK,Full fine-tune 跑通
+10,LoRA vs Full,exp10_lora_r8,-,-,FAILED,"Key 'lora' is not in struct Hydra 配置缺 LoRA 键"
+11,综合缩放,exp11_0.5B_d1000,0.7%,0.0%,OK,0.5B 模型无法学会
+11,综合缩放,exp11_3B_dfull,16.2%,81.3%,OK,
+12,Pass@K,exp12_grpo_n16,16.2%,81.2%(step20),OOM,"训练到 step20 后 CUDA OOM save checkpoint 时内存不够"
+13,1-shot RLVR,exp13_1shot,-,-,FAILED,"AssertionError gsm8k_train_1.parquet 数据文件问题"
+14,蒸馏 vs RL,exp14_grpo_3B,16.2%,82.3%,OK,GRPO RL 跑通
+14,蒸馏 vs RL,exp14_distill_3B,-,-,FAILED,"AttributeError: DataFrame object has no attribute 'tolist' SFT trainer 代码 bug"
+15,自我反思,exp15_base,16.2%,81.5%,OK,
+16,多模态 fallback,exp16_text_fallback,16.2%,82.3%,OK,
+17,多轮对话,exp17_single_turn,16.2%,81.6%,OK,
+17,多轮对话,exp17_multi_turn,16.2%,80.1%,OK,
+18,能力保留,exp18_grpo,-,-,OOM,"n=4 + save_freq=1 导致 checkpoint 保存时 CUDA OOM"
+19,成本分析 (PPO),exp19_tinyzero_ppo,-,-,FAILED,"NotImplementedError PPO validate 方法未实现"
+20,思维链保留,exp20_think_train,16.2%,82.0%,OK,
+21,奖励思考风格,exp21_result_only,16.2%,82.1%,OK,
+21,奖励思考风格,exp21_step_bonus,16.2%,81.4%,OK,
